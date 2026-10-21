@@ -1,16 +1,23 @@
-name: 自动选股测试（不调用AI）
+name: 每日自动选股（不调用AI）
 
 on:
+  # 北京时间周一至周五 17:17；交易日历另行跳过节假日。
+  schedule:
+    - cron: '17 9 * * 1-5'
   workflow_dispatch:
     inputs:
       daily_limit:
-        description: 每策略日线核验上限（首次选30；不是逐股全量扫描）
+        description: 每策略日线核验上限（不是逐股全量扫描）
         type: choice
-        default: '30'
+        default: '100'
         options:
           - '30'
           - '100'
           - '300'
+      send_notification:
+        description: 本次发送候选摘要到现有 PushPlus（不调用AI）
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -22,6 +29,8 @@ concurrency:
 jobs:
   screen:
     runs-on: ubuntu-latest
+    # 与原每日分析工作流保持相同 Secret/Variable 作用域。
+    environment: STOCK_LIST
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
@@ -34,15 +43,31 @@ jobs:
       - name: 安装依赖
         run: python -m pip install -r requirements.txt
       - name: 离线回归检查（不请求行情或模型）
-        run: python -m unittest discover -s tests -p test_screen_candidates_cli.py -v
-      - name: 仅测试两套选股策略
+        run: |
+          python -m unittest discover -s tests -p test_screen_candidates_cli.py -v
+          python -m unittest discover -s tests -p test_screening_pushplus.py -v
+      - name: 执行两套因子选股策略
         env:
           PYTHONUNBUFFERED: '1'
           TZ: Asia/Shanghai
-          DAILY_LIMIT: ${{ inputs.daily_limit }}
+          DAILY_LIMIT: ${{ inputs.daily_limit || '100' }}
+          EVENT_NAME: ${{ github.event_name }}
           SCREENING_SNAPSHOT_CALL_TIMEOUT_SEC: '60'
           SCREENING_DAILY_CALL_TIMEOUT_SEC: '15'
-        run: python scripts/screen_candidates.py --daily-limit "$DAILY_LIMIT"
+        run: |
+          args=(--daily-limit "$DAILY_LIMIT")
+          if [ "$EVENT_NAME" = "schedule" ]; then args+=(--scheduled); fi
+          python scripts/screen_candidates.py "${args[@]}"
+      - name: 推送候选摘要（不调用AI）
+        if: success() && (github.event_name == 'schedule' || inputs.send_notification == true)
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          PUSHPLUS_TOPIC: ${{ vars.PUSHPLUS_TOPIC || secrets.PUSHPLUS_TOPIC }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          args=()
+          if [ "$EVENT_NAME" = "schedule" ]; then args+=(--scheduled); fi
+          python scripts/send_screening_candidates.py "${args[@]}"
       - name: 展示结果
         if: always()
         run: |
