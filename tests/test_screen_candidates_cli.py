@@ -3,12 +3,16 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
 
-from scripts.screen_candidates import make_config, run_screening, safe_text
+from scripts.screen_candidates import (
+    audit_pick_dates, history_dates, make_config, market_clock, parse_trade_date,
+    run_screening, safe_text, snapshot_dates,
+)
 from src.services.screening.models import Pick, ScreenResult
 
 
@@ -127,6 +131,119 @@ class CandidateTest(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual([p["code"] for p in result["strategies"][0]["picks"]], ["600001"])
         self.assertEqual([p["code"] for p in result["strategies"][1]["picks"]], ["000002"])
+
+    def clock(self):
+        return {"calendar_status": "ok", "expected_daily_date": "2026-10-21",
+                "closed_session": True}
+
+    def snapshot(self, day=None):
+        return {"snapshot_fetched_at": "2026-10-22T00:05:00+08:00",
+                "snapshot_original_source": "fixture",
+                "dates_by_code": {"600001": day} if day else {}}
+
+    def test_midnight_fetch_time_does_not_prove_snapshot_date(self):
+        audit = audit_pick_dates("600001", {"daily_trade_date": "2026-10-21"},
+                                 self.snapshot(), self.clock())
+        self.assertIsNone(audit["snapshot_trade_date"])
+        self.assertEqual(audit["date_audit_status"], "unknown")
+        self.assertIn("snapshot_date_missing", audit["date_audit_reasons"])
+
+    def test_explicit_same_dates_pass_but_mismatch_fails(self):
+        audit = audit_pick_dates("600001", {"daily_trade_date": "2026-10-21"},
+                                 self.snapshot("2026-10-21"), self.clock())
+        self.assertEqual(audit["date_audit_status"], "pass")
+        audit = audit_pick_dates("600001", {"daily_trade_date": "2026-10-21"},
+                                 self.snapshot("2026-10-20"), self.clock())
+        self.assertEqual(audit["date_audit_status"], "fail")
+        self.assertIn("snapshot_daily_date_mismatch", audit["date_audit_reasons"])
+
+    def test_future_bar_and_unknown_calendar_cannot_pass(self):
+        audit = audit_pick_dates("600001", {"daily_trade_date": "2026-10-22"},
+                                 self.snapshot("2026-10-21"), self.clock())
+        self.assertEqual(audit["date_audit_status"], "fail")
+        clock = {**self.clock(), "calendar_status": "unknown", "expected_daily_date": None}
+        audit = audit_pick_dates("600001", {"daily_trade_date": "2026-10-21"},
+                                 self.snapshot("2026-10-21"), clock)
+        self.assertEqual(audit["date_audit_status"], "unknown")
+
+    def test_history_uses_latest_usable_close_not_row_order_or_zero_close(self):
+        history = pd.DataFrame({"date": ["20261021", "2026-10-20", "2026-10-22"],
+                                "close": [10, 9, 0]})
+        result = history_dates(history)
+        self.assertEqual(result["daily_trade_date"], "2026-10-21")
+        self.assertEqual(result["daily_last_close"], 10)
+        self.assertIsNone(parse_trade_date("2026-02-30"))
+        self.assertIsNone(parse_trade_date(1792596000))
+        self.assertIsNone(parse_trade_date(pd.NA))
+
+    def test_snapshot_cache_uses_provider_date_never_cache_timestamp(self):
+        path = self.output / "snapshot.json"
+        payload = {"created_at": "2026-10-22T00:05:00+08:00", "metadata": {},
+                   "frame": {"columns": ["code", "price"], "data": [["600001", 10]]}}
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        self.assertEqual(snapshot_dates(path)["dates_by_code"], {})
+        payload["frame"] = {"columns": ["code", "TRADE_DATE"], "data": [["600001", "20261021"]]}
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        self.assertEqual(snapshot_dates(path)["dates_by_code"], {"600001": "2026-10-21"})
+
+    def test_midnight_weekend_and_intraday_calendar(self):
+        for instant, expected in (("2026-10-22T00:05:00+08:00", "2026-10-21"),
+                                  ("2026-10-24T12:00:00+08:00", "2026-10-23")):
+            clock = market_clock(datetime.fromisoformat(instant))
+            self.assertEqual(clock["calendar_status"], "ok")
+            self.assertEqual(clock["expected_daily_date"], expected)
+            self.assertTrue(clock["closed_session"])
+        clock = market_clock(datetime.fromisoformat("2026-10-22T10:00:00+08:00"))
+        self.assertFalse(clock["closed_session"])
+
+    def test_callback_audits_same_history_and_rejects_mismatched_pick(self):
+        seen = []
+
+        def screen(strategy, **kwargs):
+            history = kwargs["daily_history_fetcher"]("600001", source="auto")
+            seen.append(history)
+            return self.result(strategy, picks=[Pick(rank=1, code="600001", name="fixture",
+                                                     final_score=70, screen_score=70)])
+        hist = pd.DataFrame({"date": ["2026-10-20"], "close": [10]})
+        clock = {**self.clock(), "phase": "premarket", "checked_at": "2026-10-22T00:05:00+08:00"}
+        with patch("scripts.screen_candidates.market_clock", return_value=clock), \
+             patch("src.services.screening.daily.fetch_daily_history", return_value=hist) as fetch:
+            result = run_screening(self.output, screen_fn=screen)
+        self.assertEqual(fetch.call_count, 2)
+        self.assertTrue(all(row is hist for row in seen))
+        self.assertFalse(result["ready_for_automation"])
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(len(result["strategies"][0]["date_rejected_from_top5"]), 1)
+
+    def test_unknown_snapshot_keeps_diagnostic_pick_but_not_ready(self):
+        def screen(strategy, **kwargs):
+            kwargs["daily_history_fetcher"]("600001")
+            return self.result(strategy, picks=[Pick(rank=1, code="600001", name="fixture",
+                                                     final_score=70, screen_score=70)])
+        hist = pd.DataFrame({"date": ["2026-10-21"], "close": [10]})
+        clock = {**self.clock(), "phase": "premarket", "checked_at": "2026-10-22T00:05:00+08:00"}
+        with patch("scripts.screen_candidates.market_clock", return_value=clock), \
+             patch("src.services.screening.daily.fetch_daily_history", return_value=hist):
+            result = run_screening(self.output, screen_fn=screen)
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["ready_for_automation"])
+        self.assertEqual(len(result["candidates"]), 1)
+        self.assertEqual(result["strategies"][0]["date_audit_counts"], {"unknown": 1})
+        self.assertIn("unknown", (self.output / "candidates.csv").read_text(encoding="utf-8-sig"))
+
+    def test_ready_requires_explicit_dates_and_all_sampled_histories(self):
+        def screen(strategy, **kwargs):
+            kwargs["daily_history_fetcher"]("600001")
+            return self.result(strategy, picks=[Pick(rank=1, code="600001", name="fixture",
+                                                     final_score=70, screen_score=70)])
+        hist = pd.DataFrame({"date": ["2026-10-21"], "close": [10]})
+        clock = {**self.clock(), "phase": "premarket", "checked_at": "2026-10-22T00:05:00+08:00"}
+        with patch("scripts.screen_candidates.market_clock", return_value=clock), \
+             patch("scripts.screen_candidates.snapshot_dates", return_value=self.snapshot("2026-10-21")), \
+             patch("src.services.screening.daily.fetch_daily_history", return_value=hist):
+            result = run_screening(self.output, screen_fn=screen)
+        self.assertTrue(result["ready_for_automation"])
+        self.assertEqual(result["strategies"][0]["date_audit_counts"], {"pass": 1})
 
 
 if __name__ == "__main__":

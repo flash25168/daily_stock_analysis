@@ -10,9 +10,12 @@ import logging
 import math
 import re
 import sys
+import threading
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -21,6 +24,122 @@ STRATEGIES = {"volume_breakout": "放量突破", "shrink_pullback": "缩量回�
 FIELDS = ("rank", "code", "name", "price", "change_pct", "final_score", "screen_score",
           "daily_source", "daily_quality_flags", "breakout_20d_pct",
           "volume_ratio_20d", "pullback_to_ma20_pct", "ma_bullish")
+
+
+def market_clock(now=None) -> dict:
+    """Use the existing exchange calendar; never label fail-open dates verified."""
+    from src.core.trading_calendar import build_market_phase_context
+
+    now = now or datetime.now(ZoneInfo("Asia/Shanghai"))
+    try:
+        context = build_market_phase_context(market="cn", current_time=now)
+        reliable = context.phase.value != "unknown" and not any(
+            flag in context.warnings for flag in ("calendar_unavailable", "calendar_error"))
+        return {"checked_at": now.isoformat(), "phase": context.phase.value,
+                "calendar_status": "ok" if reliable else "unknown",
+                "expected_daily_date": context.effective_daily_bar_date.isoformat() if reliable else None,
+                "closed_session": reliable and context.phase.value in (
+                    "postmarket", "premarket", "non_trading")}
+    except Exception:
+        return {"checked_at": now.isoformat(), "phase": "unknown", "calendar_status": "unknown",
+                "expected_daily_date": None, "closed_session": False}
+
+
+def parse_trade_date(value) -> str | None:
+    """Accept explicit provider session dates, never Unix timestamps or a fetch date."""
+    text = str(value if value is not None else "").strip()
+    if re.fullmatch(r"\d{8}", text):
+        pattern, text = "%Y%m%d", text
+    elif re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[ T].*)?", text):
+        pattern, text = "%Y-%m-%d", text[:10]
+    else:
+        return None
+    try:
+        return datetime.strptime(text, pattern).date().isoformat()
+    except ValueError:
+        return None
+
+
+def history_dates(history) -> dict:
+    import pandas as pd
+
+    date_col = next((col for col in ("date", "日期", "trade_date") if col in history), None)
+    close_col = next((col for col in ("close", "收盘") if col in history), None)
+    evidence = {"daily_trade_date": None, "daily_last_close": None,
+                "daily_received_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+                "daily_date_source": "history_returned_to_pipeline"}
+    if date_col is None or close_col is None:
+        return evidence
+    valid = []
+    for day, price in zip(history[date_col], history[close_col]):
+        number = pd.to_numeric(price, errors="coerce")
+        if pd.isna(number) or not math.isfinite(float(number)) or number <= 0:
+            continue
+        parsed = parse_trade_date(day)
+        if parsed is None:
+            evidence["daily_date_invalid"] = True
+            continue
+        valid.append((parsed, float(number)))
+    if valid:
+        evidence["daily_trade_date"], evidence["daily_last_close"] = max(valid, key=lambda row: row[0])
+    return evidence
+
+
+def snapshot_dates(cache_path: Path) -> dict:
+    """Read the very snapshot used by this run, including its actual provider dates."""
+    evidence = {"snapshot_fetched_at": None, "snapshot_original_source": None, "dates_by_code": {}}
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        evidence["snapshot_fetched_at"] = payload.get("created_at")
+        evidence["snapshot_original_source"] = safe_text(payload.get("metadata", {}).get("snapshot_source"))
+        frame = payload["frame"]
+        columns = frame["columns"]
+        code_col = columns.index("code")
+        # Explicit full-date fields only. Time-of-day fields are insufficient.
+        date_cols = [columns.index(col) for col in ("trade_date", "TRADE_DATE", "交易日期", "日期")
+                     if col in columns]
+        for row in frame["data"]:
+            code = str(row[code_col]).zfill(6)
+            values = [parse_trade_date(row[index]) for index in date_cols]
+            if values and all(values) and len(set(values)) == 1:
+                evidence["dates_by_code"][code] = values[0]
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        pass
+    return evidence
+
+
+def audit_pick_dates(code: str, history: dict, snapshot: dict, clock: dict) -> dict:
+    daily_date = history.get("daily_trade_date")
+    snapshot_date = snapshot.get("dates_by_code", {}).get(code)
+    expected = clock["expected_daily_date"]
+    reasons = []
+    failed = False
+    if history.get("daily_date_invalid"):
+        reasons.append("invalid_daily_date")
+        failed = True
+    if not daily_date:
+        reasons.append("daily_date_missing")
+    if not snapshot_date:
+        reasons.append("snapshot_date_missing")
+    if clock["calendar_status"] != "ok":
+        reasons.append("calendar_unknown")
+    if not clock["closed_session"]:
+        reasons.append("not_a_closed_session_test")
+    if daily_date and expected and daily_date != expected:
+        reasons.append("daily_date_not_expected")
+        failed = True
+    if snapshot_date and expected and snapshot_date != expected:
+        reasons.append("snapshot_date_not_expected")
+        failed = True
+    if snapshot_date and daily_date and snapshot_date != daily_date:
+        reasons.append("snapshot_daily_date_mismatch")
+        failed = True
+    return {**history, "snapshot_trade_date": snapshot_date,
+            "snapshot_fetched_at": snapshot["snapshot_fetched_at"],
+            "snapshot_original_source": snapshot["snapshot_original_source"],
+            "expected_daily_date": expected,
+            "date_audit_status": "fail" if failed else ("unknown" if reasons else "pass"),
+            "date_audit_reasons": reasons}
 
 
 def safe_text(value: object) -> str:
@@ -73,10 +192,30 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
         from src.services.screening.pipeline import screen as screen_fn
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    config = make_config(output_dir / "cache", daily_limit)
+    # Isolate evidence to this invocation, while reusing one snapshot across
+    # its two strategies. A failed cache write must not expose a previous run.
+    config = make_config(output_dir / "cache" / uuid4().hex, daily_limit)
+    run_clock = market_clock()
     results = []
     for strategy, label in STRATEGIES.items():
         print(f"开始：{label}；日线核验上限 {daily_limit}", flush=True)
+        histories = {}
+        history_lock = threading.Lock()
+
+        def audited_history_fetcher(code, **kwargs):
+            from src.services.screening.daily import fetch_daily_history
+            try:
+                history = fetch_daily_history(code, **kwargs)
+            except Exception:
+                with history_lock:
+                    histories[str(code).zfill(6)] = {"daily_trade_date": None,
+                                                   "daily_date_source": "history_fetch_failed"}
+                raise
+            evidence = history_dates(history)
+            with history_lock:
+                histories[str(code).zfill(6)] = evidence
+            return history
+
         try:
             result = screen_fn(
                 strategy, market="cn", max_output=5, use_llm=False,
@@ -84,6 +223,7 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
                 post_analyzers=["scorecard"], deep_analysis=False,
                 daily_enrich=True, daily_enrich_max_candidates=daily_limit,
                 explain_filters=True, context=None, config=config,
+                daily_history_fetcher=audited_history_fetcher,
             )
             if result.llm_ranked or result.llm_attempted_models or result.deep_analysis_requested:
                 raise RuntimeError("Unexpected model execution")
@@ -92,8 +232,17 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
             # A source outage must not masquerade as a valid zero-candidate result.
             if result.daily_enriched and result.daily_enrich_count == 0:
                 raise RuntimeError("All attempted daily histories failed")
-            accepted, rejected = [], 0
+            clock = market_clock()
+            snapshot = snapshot_dates(config.fallback_snapshot_path)
+            accepted, rejected, date_rejected = [], 0, []
+            audits = {code: audit_pick_dates(code, evidence, snapshot, clock)
+                      for code, evidence in histories.items()}
             for pick in result.picks:
+                code = str(pick.code).zfill(6)
+                audit = audits.get(code) or audit_pick_dates(code, {}, snapshot, clock)
+                if audit["date_audit_status"] == "fail":
+                    date_rejected.append({"code": code, **audit})
+                    continue
                 flags = str(pick.daily_quality_flags or "").lower()
                 if any(word in flags for word in (
                     "stale", "fetch_failed", "short_history", "missing_", "incomplete_",
@@ -101,7 +250,14 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
                 )):
                     rejected += 1
                     continue
-                accepted.append(pick_row(pick))
+                accepted.append({**pick_row(pick), **audit})
+            statuses = [row["date_audit_status"] for row in audits.values()]
+            statuses.extend(row["date_audit_status"] for row in accepted if row["code"] not in audits)
+            session_changed = run_clock["expected_daily_date"] != clock["expected_daily_date"]
+            if session_changed:
+                statuses.append("fail")
+            audit_status = ("fail" if "fail" in statuses else
+                            "unknown" if not statuses or "unknown" in statuses else "pass")
             results.append({
                 "strategy": strategy, "label": label, "status": "ok",
                 "strategy_version": result.strategy_version,
@@ -111,6 +267,13 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
                 "daily_success_count": result.daily_enrich_count,
                 "daily_limit": daily_limit,
                 "quality_rejected_from_top5": rejected,
+                "date_audit_status": audit_status,
+                "date_audit_counts": dict(Counter(statuses)),
+                "run_crossed_session_boundary": session_changed,
+                "date_rejected_from_top5": date_rejected,
+                "snapshot_fetched_at": snapshot["snapshot_fetched_at"],
+                "snapshot_original_source": snapshot["snapshot_original_source"],
+                "date_audit": [{"code": code, **audit} for code, audit in audits.items()],
                 "notes": [safe_text(item) for item in result.degradation],
                 "picks": accepted,
             })
@@ -134,10 +297,17 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
             if code not in candidates:
                 candidates[code] = {"code": code, "name": row["name"], "signals": []}
             candidates[code]["signals"].append({"strategy": result["strategy"],
-                                                "rank": row["rank"], "score": row["final_score"]})
+                                                "rank": row["rank"], "score": row["final_score"],
+                                                "daily_trade_date": row.get("daily_trade_date"),
+                                                "snapshot_trade_date": row.get("snapshot_trade_date"),
+                                                "date_audit_status": row["date_audit_status"]})
     payload = {
         "mode": "factor_only_test", "llm_enabled": False, "notifications_enabled": False,
         "created_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+        "date_audit_version": 2,
+        "market_clock": run_clock,
+        "ready_for_automation": bool(results) and all(
+            row["status"] == "ok" and row["date_audit_status"] == "pass" for row in results),
         "status": "ok" if all(r["status"] == "ok" for r in results) else "incomplete",
         "coverage": "全市场快照初筛；每策略仅核验有界候选日线，非逐股全量日线扫描",
         "daily_limit_per_strategy": daily_limit,
@@ -155,7 +325,8 @@ def write_outputs(output_dir: Path, payload: dict) -> None:
         ",".join(codes) + "\n", encoding="utf-8")
     with (output_dir / "candidates.csv").open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["code", "name", "strategy", "rank_in_strategy", "factor_score"])
+        writer.writerow(["code", "name", "strategy", "rank_in_strategy", "factor_score",
+                         "daily_trade_date", "snapshot_trade_date", "date_audit_status"])
         for row in payload["candidates"]:
             for signal in row["signals"]:
                 # Prevent spreadsheet formula interpretation of upstream text.
@@ -163,7 +334,8 @@ def write_outputs(output_dir: Path, payload: dict) -> None:
                 if name.lstrip().startswith(("=", "+", "-", "@")):
                     name = "'" + name
                 writer.writerow([row["code"], name, STRATEGIES[signal["strategy"]],
-                                 signal["rank"], signal["score"]])
+                                 signal["rank"], signal["score"], signal["daily_trade_date"],
+                                 signal["snapshot_trade_date"], signal["date_audit_status"]])
     lines = ["# A股自动选股测试", "", f"生成时间（北京时间）：{payload['created_at']}", "",
              "仅执行本地因子筛选；未调用模型、未搜索新闻、未发送通知。", "",
              "全市场快照初筛，每策略最多核验 "
@@ -171,6 +343,11 @@ def write_outputs(output_dir: Path, payload: dict) -> None:
              "沿用仓库选股引擎策略阈值，不等同于根目录 strategies 中的 AI 自然语言规则。",
              "快照源返回成功不保证覆盖全部上市股票，也不保证行情交易日期正确；请核对源和时间。",
              "盘中或休市运行仅作测试；未核实新闻、公告、财务及筹码风险。候选不是买入指令。", "",
+             f"日期核验版本：{payload['date_audit_version']}；"
+             f"当前市场阶段：{payload['market_clock']['phase']}；"
+             f"预期已收盘日线日期：{payload['market_clock']['expected_daily_date'] or '未知'}。",
+             f"是否具备日期条件以接入每日自动运行：{'是' if payload['ready_for_automation'] else '否'}。",
+             "抓取时间不是交易日期；未知日期不视为通过。unknown 候选只用于诊断，fail 候选移除且不补位。", "",
              f"运行状态：{payload['status']}；去重候选数：{len(codes)}（最多 10 只）", ""]
     for result in payload["strategies"]:
         lines += [f"## {result['label']}", ""]
@@ -180,12 +357,20 @@ def write_outputs(output_dir: Path, payload: dict) -> None:
         lines += [f"策略版本：{result['strategy_version']}；快照源：{result['snapshot_source']}；"
                   f"快照 {result['snapshot_count']} 条；日线成功 {result['daily_success_count']} 条；"
                   f"硬筛后 {result['after_filter_count']} 条。", ""]
+        lines += [f"日期核验：{result['date_audit_status']}；原快照来源："
+                  f"{result['snapshot_original_source'] or '未知'}；快照抓取时间："
+                  f"{result['snapshot_fetched_at'] or '未知'}（不是交易日期）。",
+                  f"Top 5 中因日期失败移除：{len(result['date_rejected_from_top5'])} 只；"
+                  "逐股日线/快照日期及原因详见 JSON 的 date_audit。", ""]
+        if result["run_crossed_session_boundary"]:
+            lines += ["运行跨越了已完成交易日的边界，不能作为同一交易日的完整结果。", ""]
         if result["picks"]:
-            lines += ["| 代码 | 名称 | 策略内因子分 | 行情价 | 日线来源 | 质量标记 |",
-                      "|---|---|---:|---:|---|---|"]
+            lines += ["| 代码 | 名称 | 策略内因子分 | 行情价 | 日线交易日 | 快照交易日 | 日期核验 |",
+                      "|---|---|---:|---:|---|---|---|"]
             for row in result["picks"]:
                 lines.append(f"| {row['code']} | {row['name']} | {row['final_score']} | "
-                             f"{row['price']} | {row['daily_source']} | {row['daily_quality_flags']} |")
+                             f"{row['price']} | {row.get('daily_trade_date') or '未知'} | "
+                             f"{row.get('snapshot_trade_date') or '未知'} | {row['date_audit_status']} |")
         else:
             lines.append("本次核验范围内没有可输出候选，未放宽条件凑数。")
         lines += ["", f"Top 5 中因陈旧/失败/样本不足而移除：{result['quality_rejected_from_top5']} 只。",

@@ -2,6 +2,38 @@
 
 ## 中文说明
 
+### 版本 2：行情日期核验
+
+本次更新仅替换脚本、离线测试和说明，不修改工作流、策略阈值、模型或通知配置。
+脚本通过请求级 `daily_history_fetcher` 回调记录**实际送入原筛选管线**的日线日期和末收盘价，
+没有另抓一套行情来代替原证据。JSON 的 `date_audit` 覆盖本次实际成功获取日线的样本，以及抓取失败的未知记录。
+每次脚本运行使用独立缓存子目录，两个策略之间复用同一次快照；写缓存失败时不会误读上轮文件作为本轮证据。
+Markdown 和 CSV 展示最终候选的日线交易日、快照交易日和核验状态。
+
+- `daily_trade_date`：该次实际日线中有有效收盘价的最新交易日期；缺失保持空值。
+- `daily_received_at`：日线返回到脚本的时间，不能当作行情发生时间。
+- `snapshot_trade_date`：仅消费当前快照缓存中明确的完整交易日期字段（如 `TRADE_DATE`），不从价格、抓取时间或日线日期推测。
+- `snapshot_fetched_at`：同一快照写入缓存的原始抓取时间；复用缓存时保留原值。
+- `snapshot_original_source`：即使本策略通过 `last_good_cache` 读取，也记录该快照原始数据源。
+- `expected_daily_date`：复用 DSA 交易日历计算的最近已完成交易日，按北京时间处理凌晨、休市和周末。
+
+每股 `date_audit_status`：
+
+- `pass`：日历可靠、当前不在盘中/午休/收盘竞价、快照和日线均有明确日期，且均等于预期已完成交易日。
+- `unknown`：任一日期缺失、日历不可用或本次不是已收盘时段测试。保留候选供诊断，**不视为核验通过**。
+- `fail`：日期非法、日线/快照相互不一致或偏离预期已完成交易日。Top 5 中相应股票移除，不自动补位。
+
+当前已验证可访问的 `em_datacenter` 查询未显式请求交易日期，因此其快照日期通常仍是 `unknown`。
+这属于证据不足，不能声称已经完成快照与日线的同日核验；需要下一步寻找有明确日期证据的快照源。
+本更新不伪造日期，不更换现有来源，也不引入额外的实时报价请求。
+
+全局 `ready_for_automation` 只有在两套策略均运行成功、所有已记录的样本日期核验通过且未跨已完成交易日边界时为 `true`。
+它仅说明本次有界样本具备日期条件，不表示全市场穷尽核验、无新闻风险或已具备交易资格。
+运行 `status=ok` 只表示计算完成，不能替代日期核验；可能同时出现 `status=ok` 和 `ready_for_automation=false`。
+空名单且无可核验样本仍不标记日期通过。原定时分析任务不会被这个诊断字段自动禁用或启用。
+
+离线测试增加午夜/周末/盘中、未来日期、快照与日线不一致、未知日期不冒充通过、日线回调证据及缓存抓取时间隔离场景。
+
 这是第一阶段测试入口，只筛选候选，不调用 AI、不搜索新闻、不推送消息、不修改 `STOCK_LIST`。
 原有 `00-daily-analysis.yml`、模型设置及 PushPlus 设置保持不变；原工作流的既有定时任务仍会按原设置运行。
 本测试只手动触发，没有新增定时任务。GitHub Actions 本身仍可能占用账户运行分钟数。
@@ -65,6 +97,27 @@ CSV 中代码应按文本导入，以保留前导零。两个策略各最多 5 �
 回滚只需禁用或删除新增 `01-screening-test.yml` 工作流；原分析工作流和现有 Secrets 无需更改。
 
 ## English
+
+### Version 2: date evidence
+
+The update records dates and last-close values from the very histories returned through
+the request-scoped daily-history callback into the original screening pipeline. No
+additional quote request, strategy change or workflow update is required. The snapshot
+date is read only from an explicit full trade-date field in the same run's snapshot
+cache; its acquisition timestamp and original provider are reported separately.
+Missing snapshot dates (normally the current `em_datacenter` query) remain unknown.
+Never infer a trade date from cache age, the report time, matching prices or daily bars.
+
+Date checks return `pass`, `unknown` or `fail`. Pass requires reliable exchange-calendar
+context, a closed-session test and both explicit dates matching the latest completed
+session. Unknown records remain diagnostic candidates, not verified picks; failed Top 5
+records are removed without backfilling. Full per-sample evidence and rejection reasons
+are stored in JSON; candidate dates/status are also shown in Markdown and CSV.
+`status=ok` means computation completed; `ready_for_automation` is a separate date-only
+condition over the bounded, recorded sample and cannot certify exhaustive coverage or
+investment quality. A run crossing the completed-session boundary cannot pass.
+Midnight/weekend/intraday, future/mismatched/missing dates, cache timestamps and callback
+evidence are tested offline. Existing analysis schedules and secrets are unaffected.
 
 The manual-only **自动选股测试（不调用AI）** workflow reuses DSA's bundled screening engine
 and its existing `volume_breakout` / `shrink_pullback` strategies. It does not execute the
