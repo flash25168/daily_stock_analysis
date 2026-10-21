@@ -45,6 +45,18 @@ def market_clock(now=None) -> dict:
                 "expected_daily_date": None, "closed_session": False}
 
 
+def schedule_gate(clock: dict) -> str:
+    """A delayed cron must never send the previous session as today's report."""
+    if clock["calendar_status"] != "ok":
+        return "calendar_unknown"
+    if clock["phase"] == "non_trading":
+        return "non_trading_day"
+    local_date = datetime.fromisoformat(clock["checked_at"]).astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    if clock["phase"] != "postmarket" or clock["expected_daily_date"] != local_date:
+        return "not_today_after_close"
+    return "run"
+
+
 def parse_trade_date(value) -> str | None:
     """Accept explicit provider session dates, never Unix timestamps or a fetch date."""
     text = str(value if value is not None else "").strip()
@@ -343,8 +355,11 @@ def write_outputs(output_dir: Path, payload: dict) -> None:
                 writer.writerow([row["code"], name, STRATEGIES[signal["strategy"]],
                                  signal["rank"], signal["score"], signal["daily_trade_date"],
                                  signal["snapshot_trade_date"], signal["date_audit_status"]])
-    lines = ["# A股自动选股测试", "", f"生成时间（北京时间）：{payload['created_at']}", "",
-             "仅执行本地因子筛选；未调用模型、未搜索新闻、未发送通知。", "",
+    notification = payload.get("notification", {})
+    lines = ["# A股自动选股（因子筛选）", "", f"生成时间（北京时间）：{payload['created_at']}", "",
+             "仅执行本地因子筛选；未调用模型、未搜索新闻。",
+             f"通知状态：{notification.get('status', 'not_requested')}；"
+             f"{notification.get('message', '本次未请求发送通知。')}", "",
              "全市场快照初筛，每策略最多核验 "
              f"{payload['daily_limit_per_strategy']} 只候选的日线；不是全市场逐股日线扫描。",
              "沿用仓库选股引擎策略阈值，不等同于根目录 strategies 中的 AI 自然语言规则。",
@@ -358,6 +373,8 @@ def write_outputs(output_dir: Path, payload: dict) -> None:
              "快照交易日按来源原始字段记录；东方财富 em_datacenter 使用 MAX_TRADE_DATE。",
              "日期 pass 仅表示来源声明日期与日线/日历一致，不证明逐股实际最后成交日、价格准确或数据完整。", "",
              f"运行状态：{payload['status']}；去重候选数：{len(codes)}（最多 10 只）", ""]
+    if payload.get("skip_reason"):
+        lines += [f"本次跳过：{payload['skip_reason']}；未抓取行情、未发送通知。", ""]
     for result in payload["strategies"]:
         lines += [f"## {result['label']}", ""]
         if result["status"] != "ok":
@@ -394,12 +411,30 @@ def main() -> int:
     parser.add_argument("--daily-limit", type=int, default=30,
                         help="Daily-history cap per strategy (1-1000); default: 30")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "reports" / "screening_test")
+    parser.add_argument("--scheduled", action="store_true", help="Only run on a trading day after today's close")
     args = parser.parse_args()
     if not 1 <= args.daily_limit <= 1000:
         parser.error("--daily-limit must be between 1 and 1000")
     # Avoid publishing raw third-party exception logs. Output a bounded summary instead.
     logging.basicConfig(level=logging.CRITICAL)
+    if args.scheduled:
+        clock = market_clock()
+        gate = schedule_gate(clock)
+        if gate != "run":
+            args.output_dir.mkdir(parents=True, exist_ok=True)
+            payload = {"mode": "factor_only_daily", "created_at": clock["checked_at"],
+                       "status": "error" if gate == "calendar_unknown" else "skipped",
+                       "skip_reason": gate, "market_clock": clock, "date_audit_version": 3,
+                       "ready_for_automation": False, "llm_enabled": False,
+                       "notifications_enabled": False, "daily_limit_per_strategy": args.daily_limit,
+                       "strategies": [], "candidates": []}
+            write_outputs(args.output_dir, payload)
+            print(f"定时任务未执行选股：{gate}")
+            return 1 if gate == "calendar_unknown" else 0
     payload = run_screening(args.output_dir, daily_limit=args.daily_limit)
+    if args.scheduled and not payload["ready_for_automation"]:
+        print("日期核验未全部通过；本次定时任务不发送候选名单。")
+        return 1
     return 0 if payload["status"] == "ok" else 1
 
 

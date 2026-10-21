@@ -80,13 +80,24 @@ class CandidateTest(unittest.TestCase):
         self.assertNotIn("private", json.dumps(result))
         self.assertNotIn("private", safe_text("token=private"))
 
-    def test_workflow_has_no_secrets_schedule_or_analysis_entrypoint(self):
+    def test_workflow_only_exposes_pushplus_secrets_to_notification_step(self):
         import yaml
         workflow = Path(__file__).resolve().parents[1] / ".github/workflows/01-screening-test.yml"
         text = workflow.read_text(encoding="utf-8")
         data = yaml.load(text, Loader=yaml.BaseLoader)
-        self.assertEqual(list(data["on"]), ["workflow_dispatch"])
-        self.assertNotIn("secrets.", text)
+        # Keep v3's manual-only workflow compatible while users install v4
+        # ordinary files first, then replace the workflow in a second commit.
+        self.assertIn("workflow_dispatch", data["on"])
+        self.assertTrue(set(data["on"]).issubset({"schedule", "workflow_dispatch"}))
+        if "schedule" in data["on"]:
+            self.assertEqual(data["on"]["schedule"][0]["cron"], "17 9 * * 1-5")
+        for step in data["jobs"]["screen"]["steps"]:
+            step_text = json.dumps(step)
+            if "secrets." in step_text:
+                self.assertIn("send_screening_candidates.py", step.get("run", ""))
+                self.assertEqual(set(step["env"]), {"PUSHPLUS_TOKEN", "PUSHPLUS_TOPIC", "EVENT_NAME"})
+        self.assertNotIn("OPENAI_API_KEY", text)
+        self.assertNotIn("LLM_CHANNELS", text)
         self.assertNotIn("main.py", text)
 
     def test_unexpected_model_marker_fails(self):

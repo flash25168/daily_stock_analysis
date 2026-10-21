@@ -2,6 +2,45 @@
 
 ## 中文说明
 
+### 版本 4（当前）：工作日自动选股及 PushPlus
+
+沿用 `01-screening-test.yml` 文件，显示名称更新为「每日自动选股（不调用AI）」。
+默认分支上的工作流设为 UTC 周一到周五 09:17，即北京时间 17:17 触发；GitHub 调度可能延迟，
+不是精确定时或送达保证。A 股节假日由交易日历跳过；日历不可靠时失败关闭，不按自然日放行。
+定时模式仅在当天交易日收盘后处理当日已完成行情；延迟到次日凌晨不再推送前一日名单。
+
+每策略默认核验前 100 只初筛候选，仍不等于全市场逐股日线扫描，不修改任何策略阈值。
+原 `00-daily-analysis.yml` 继续按原设置运行（包括既有 AI 分析与推送），本更新不会禁用它。
+本选股工作流不传模型 Secret，不请求主程序或深度分析服务，不产生模型 API 调用。
+
+推送在单独一步执行，只复用已有 `PUSHPLUS_TOKEN` 及可选 `PUSHPLUS_TOPIC`，并沿用原工作流的
+`environment: STOCK_LIST` 以保持环境级 Secret 的作用域。不新增必填 Secret 或 `.env` 配置项。
+手动运行默认上限 100，勾选 `send_notification` 才发送；未勾选则只保存结果。
+定时运行会自动尝试发送，但必须计算成功且全部样本日期核验通过，并在发送前再次核对时点。
+未通过时保留 artifact 和失败原因，不将未知或过期名单发到微信。
+
+发送脚本直接复用 DSA 现有 `PushplusSender`，公共发送地址由 HTTP 改为 HTTPS，配置和载荷格式不变。
+发送紧凑候选摘要，不发送调试日志、配置、密钥或原始缓存。少于 10 只不补足；有效零候选会说明是核验范围内无候选。
+若初筛没有任何可核验日线，不能自动宣称日期核验通过，因此会保留结果而不发送。
+
+PushPlus 的 `code=200` 只表示异步受理，报告记为 `accepted`，不等同于微信已送达。
+见 [官方 API 说明](https://www.pushplus.plus/doc/guide/api.html) 及
+[HTTPS 支持说明](https://www.pushplus.plus/doc/help/https.html)。
+同一个结果文件已有受理/提交中/响应未知记录时不自动再次提交；不会因超时自动重试。
+GitHub 的 Re-run 或新的手动运行会重新生成结果，因此仍可能重复发送，同一天请不要反复点运行。
+失败时先检查微信与 Actions 的通知状态，不要立即重跑；额度和账号限制依 PushPlus 实际服务为准。
+
+安装普通文件后，再在线更新工作流内容；不必新建第二个工作流，避免重复定时。
+首次手动选 100 并勾选推送，确认手机收到「A股选股候选（非AI）」再观察下一交易日的自动任务。
+本地仅进行模拟 HTTP 验证，不读取用户密钥，也没有实际向微信发送测试消息。
+
+回滚自动运行：从本工作流移除 `schedule` 或禁用本工作流；原每日分析和原 PushPlus 配置无需改动。
+只想恢复手动测试，可恢复 v3 工作流和脚本；HTTPS sender 改动可单独保留。
+
+新增离线验证命令：`python -m unittest discover -s tests -p test_screening_pushplus.py -v`。
+覆盖假日/日历异常在抓行情前跳过、日期或旧报告阻止推送、Token 缺失、HTTPS 原生 sender 请求、
+异步受理状态、超时后不自动重试及敏感信息不入产物。
+
 ### 版本 3：识别东方财富来源日期
 
 直接在线核对原 `em_datacenter` 请求后，确认接口会在每行附带 `MAX_TRADE_DATE`。
@@ -50,15 +89,15 @@ Markdown 和 CSV 展示最终候选的日线交易日、快照交易日和核验
 
 离线测试增加午夜/周末/盘中、未来日期、快照与日线不一致、未知日期不冒充通过、日线回调证据及缓存抓取时间隔离场景。
 
-这是第一阶段测试入口，只筛选候选，不调用 AI、不搜索新闻、不推送消息、不修改 `STOCK_LIST`。
+以下说明包含 v1–v3 的测试设计；当前行为以版本 4 为准。未勾选手动推送时只筛选候选，不调用 AI、不搜索新闻、不修改 `STOCK_LIST`。
 原有 `00-daily-analysis.yml`、模型设置及 PushPlus 设置保持不变；原工作流的既有定时任务仍会按原设置运行。
-本测试只手动触发，没有新增定时任务。GitHub Actions 本身仍可能占用账户运行分钟数。
+v1–v3 只手动触发；v4 增加上述定时任务。GitHub Actions 本身仍可能占用账户运行分钟数。
 
 ### 运行
 
 1. 将本补丁中的文件按原路径放进自己的仓库默认分支。
-2. 进入 Actions，选择「自动选股测试（不调用AI）」并点击 Run workflow。
-3. 首次保持 `daily_limit=30`。该值为每策略日线核验上限，支持 30 / 100 / 300。
+2. 进入 Actions，选择「每日自动选股（不调用AI）」并点击 Run workflow。
+3. 当前默认 `daily_limit=100`。该值为每策略日线核验上限，支持 30 / 100 / 300；勾选推送才发送手动结果。
 4. 查看运行 Summary，并下载 `screening-test-运行编号` artifact。
 
 产物：`screening_report.md` 为阅读版，`screening_result.json` 为结构化诊断，
@@ -85,9 +124,9 @@ CSV 中代码应按文本导入，以保留前导零。两个策略各最多 5 �
 
 ### 模型和费用边界
 
-工作流不传入任何模型或通知 Secret。脚本使用显式 `Config()`，不从环境构建模型配置；
+工作流不传入任何模型 Secret；v4 仅向单独的推送步骤传现有 PushPlus 配置。选股脚本使用显式 `Config()`，不从环境构建模型配置；
 `use_llm=False`、`deep_analysis=False`、`context=None`，后分析仅允许本地 `scorecard`。
-不调用主程序、不请求 DSA 深度分析接口或外部后分析服务，不触发模型生成或通知。
+不调用主程序、不请求 DSA 深度分析接口或外部后分析服务，不触发模型生成；通知由 v4 的独立步骤负责。
 不新增环境变量配置项；`--daily-limit` 和 `--output-dir` 是本脚本 CLI 参数。
 行情仍走引擎原有公开数据源与备用链路，受接口可用性和限制影响。
 
@@ -101,7 +140,7 @@ CSV 中代码应按文本导入，以保留前导零。两个策略各最多 5 �
 任务被强制取消或超时时不保证能上传完整结果；先将 N 降至 30 复测。
 
 报告是未经新闻、公告、财务、筹码核验的技术候选；盘中或休市运行只作测试。
-第一轮测试通过后，再单独讨论每日自动运行和将候选交给现有模型与微信推送链路。
+v4 仅接入候选名单推送，未把名单交给模型分析；模型接入需另行决定。
 
 ### 验证和回滚
 
@@ -113,6 +152,26 @@ CSV 中代码应按文本导入，以保留前导零。两个策略各最多 5 �
 回滚只需禁用或删除新增 `01-screening-test.yml` 工作流；原分析工作流和现有 Secrets 无需更改。
 
 ## English
+
+### Version 4 (current): scheduled factor screening and PushPlus
+
+The existing workflow file is renamed in the UI to 每日自动选股（不调用AI） and triggers
+at 09:17 UTC / 17:17 Beijing time on weekdays. GitHub scheduling can be delayed. The
+exchange calendar skips CN holidays and fails closed when unavailable; scheduled work
+requires today's completed session and will not send yesterday's report after midnight.
+The daily-history cap is 100 per strategy, not an exhaustive full-market history scan.
+The original daily AI workflow and its schedule remain unchanged.
+
+Notification is a separate step with only the existing PushPlus token/topic configuration,
+using the same environment scope as the original workflow. No model secret is exposed.
+Manual runs default to no notification unless the checkbox is selected; scheduled runs
+attempt it only after successful date validation, rechecked immediately before sending.
+The sender reuses DSA's native PushplusSender, with its transport switched to HTTPS.
+API acceptance is recorded as accepted, never as confirmed WeChat delivery. No actual
+message was sent during local mocked validation. One existing result file is not retried
+after acceptance or an uncertain attempt; new GitHub runs can still send duplicates.
+Disable this workflow or remove its schedule to roll back automatic selection without
+changing the original analysis workflow. The earlier manual-only design is described below.
 
 ### Version 3: Eastmoney source-declared date
 
@@ -147,7 +206,7 @@ investment quality. A run crossing the completed-session boundary cannot pass.
 Midnight/weekend/intraday, future/mismatched/missing dates, cache timestamps and callback
 evidence are tested offline. Existing analysis schedules and secrets are unaffected.
 
-The manual-only **自动选股测试（不调用AI）** workflow reuses DSA's bundled screening engine
+The original manual-only **自动选股测试（不调用AI）** workflow (v1–v3) reuses DSA's bundled screening engine
 and its existing `volume_breakout` / `shrink_pullback` strategies. It does not execute the
 root-directory natural-language AI strategy instructions, whose thresholds differ.
 No model/notification secrets are passed. Explicit configuration disables LLM ranking,
