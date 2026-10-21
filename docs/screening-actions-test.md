@@ -2,6 +2,23 @@
 
 ## 中文说明
 
+### 版本 3：识别东方财富来源日期
+
+直接在线核对原 `em_datacenter` 请求后，确认接口会在每行附带 `MAX_TRADE_DATE`。
+此前版本只检查通用日期字段，遗漏了这个已有字段，因而将快照日期标记为未知。
+本次只修正读字段逻辑，**不修改请求字段、筛选参数、行情来源优先级或策略**。
+
+来源为 `em_datacenter` 时，读取同次运行快照原行的 `MAX_TRADE_DATE`，并记录
+`snapshot_trade_date_field: "MAX_TRADE_DATE"`。不把同响应可能出现的其他用途 `TRADE_DATE`
+当作当前快照声明日期，也不将 `MAX_TRADE_DATE` 规则套用到其他数据源。
+该字段缺失或格式非法时仍保持 `unknown`；偏离日线或预期交易日时为 `fail`。
+日历、日线、字段缺失及跨交易日边界检查继续保留。
+
+该日期是**数据源声明的快照日期**，不是独立确认的每只股票最后成交日。
+`pass` 只说明来源声明日期、实际使用的日线日期和交易日历一致，不证明每个价格新鲜、
+停牌状态已排除、全部 A 股已覆盖或具备投资价值。
+在线字段观测与离线回归测试均已完成，仍需在用户的 GitHub Actions 中运行确认实际缓存的字段。
+
 ### 版本 2：行情日期核验
 
 本次更新仅替换脚本、离线测试和说明，不修改工作流、策略阈值、模型或通知配置。
@@ -23,9 +40,8 @@ Markdown 和 CSV 展示最终候选的日线交易日、快照交易日和核验
 - `unknown`：任一日期缺失、日历不可用或本次不是已收盘时段测试。保留候选供诊断，**不视为核验通过**。
 - `fail`：日期非法、日线/快照相互不一致或偏离预期已完成交易日。Top 5 中相应股票移除，不自动补位。
 
-当前已验证可访问的 `em_datacenter` 查询未显式请求交易日期，因此其快照日期通常仍是 `unknown`。
-这属于证据不足，不能声称已经完成快照与日线的同日核验；需要下一步寻找有明确日期证据的快照源。
-本更新不伪造日期，不更换现有来源，也不引入额外的实时报价请求。
+版本 2 未识别该查询自动附带的 `MAX_TRADE_DATE`；版本 3 已按上节修正。
+任何来源仍不能提供有效日期时继续保持未知，不伪造日期，不更换现有来源，不引入额外实时报价请求。
 
 全局 `ready_for_automation` 只有在两套策略均运行成功、所有已记录的样本日期核验通过且未跨已完成交易日边界时为 `true`。
 它仅说明本次有界样本具备日期条件，不表示全市场穷尽核验、无新闻风险或已具备交易资格。
@@ -98,6 +114,18 @@ CSV 中代码应按文本导入，以保留前导零。两个策略各最多 5 �
 
 ## English
 
+### Version 3: Eastmoney source-declared date
+
+A direct observation of the original Eastmoney xuangu request confirmed a per-row
+`MAX_TRADE_DATE` field. Version 2 missed this existing field; version 3 consumes it
+only when the original cache provider is `em_datacenter`, and records its field name.
+It does not change the request, filters, provider priority or strategy. Other `TRADE_DATE`
+fields are not substituted for the Eastmoney snapshot declaration; missing/invalid fields
+remain unknown. All calendar/daily-date/boundary checks continue to apply.
+This is the provider-declared snapshot date, not independent proof of each security's last
+trade or quote accuracy. Live field observation and offline tests do not replace a run
+in the user's Actions environment.
+
 ### Version 2: date evidence
 
 The update records dates and last-close values from the very histories returned through
@@ -105,7 +133,7 @@ the request-scoped daily-history callback into the original screening pipeline. 
 additional quote request, strategy change or workflow update is required. The snapshot
 date is read only from an explicit full trade-date field in the same run's snapshot
 cache; its acquisition timestamp and original provider are reported separately.
-Missing snapshot dates (normally the current `em_datacenter` query) remain unknown.
+Missing snapshot dates remain unknown (version 3 now recognizes Eastmoney's existing field).
 Never infer a trade date from cache age, the report time, matching prices or daily bars.
 
 Date checks return `pass`, `unknown` or `fail`. Pass requires reliable exchange-calendar

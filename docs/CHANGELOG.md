@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 选股日期审计识别原东方财富快照返回的 MAX_TRADE_DATE，保留原始字段名，仅按来源声明核对日期，不把抓取时间或其他用途 TRADE_DATE 当作快照日期。
+
 - [修复] 手动选股测试记录实际使用的日线交易日、快照原始来源和抓取时间，区分日期 pass/unknown/fail，移除日期失败候选，并单列日期条件是否满足；快照日期缺失不再被误认为已核验。
 
 - [新功能] 新增手动 GitHub Actions 双策略选股测试入口，复用内置放量突破/缩量回踩策略，仅本地因子评分，输出最多 10 只去重候选与覆盖范围诊断，不调用 AI 或通知，不改动原每日分析工作流。

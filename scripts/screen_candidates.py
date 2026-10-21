@@ -87,7 +87,8 @@ def history_dates(history) -> dict:
 
 def snapshot_dates(cache_path: Path) -> dict:
     """Read the very snapshot used by this run, including its actual provider dates."""
-    evidence = {"snapshot_fetched_at": None, "snapshot_original_source": None, "dates_by_code": {}}
+    evidence = {"snapshot_fetched_at": None, "snapshot_original_source": None,
+                "dates_by_code": {}, "date_fields_by_code": {}}
     try:
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
         evidence["snapshot_fetched_at"] = payload.get("created_at")
@@ -95,14 +96,19 @@ def snapshot_dates(cache_path: Path) -> dict:
         frame = payload["frame"]
         columns = frame["columns"]
         code_col = columns.index("code")
-        # Explicit full-date fields only. Time-of-day fields are insufficient.
-        date_cols = [columns.index(col) for col in ("trade_date", "TRADE_DATE", "交易日期", "日期")
+        # Eastmoney's original xuangu query returns MAX_TRADE_DATE with each row.
+        # Do not substitute TRADE_DATE: requesting that field can refer to a
+        # different dated dataset rather than the current snapshot declaration.
+        allowed_fields = (("MAX_TRADE_DATE",) if evidence["snapshot_original_source"] == "em_datacenter"
+                          else ("trade_date", "TRADE_DATE", "交易日期", "日期"))
+        date_cols = [columns.index(col) for col in allowed_fields
                      if col in columns]
         for row in frame["data"]:
             code = str(row[code_col]).zfill(6)
             values = [parse_trade_date(row[index]) for index in date_cols]
             if values and all(values) and len(set(values)) == 1:
                 evidence["dates_by_code"][code] = values[0]
+                evidence["date_fields_by_code"][code] = ",".join(columns[index] for index in date_cols)
     except (OSError, ValueError, KeyError, TypeError, IndexError):
         pass
     return evidence
@@ -135,6 +141,7 @@ def audit_pick_dates(code: str, history: dict, snapshot: dict, clock: dict) -> d
         reasons.append("snapshot_daily_date_mismatch")
         failed = True
     return {**history, "snapshot_trade_date": snapshot_date,
+            "snapshot_trade_date_field": snapshot.get("date_fields_by_code", {}).get(code),
             "snapshot_fetched_at": snapshot["snapshot_fetched_at"],
             "snapshot_original_source": snapshot["snapshot_original_source"],
             "expected_daily_date": expected,
@@ -304,7 +311,7 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
     payload = {
         "mode": "factor_only_test", "llm_enabled": False, "notifications_enabled": False,
         "created_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
-        "date_audit_version": 2,
+        "date_audit_version": 3,
         "market_clock": run_clock,
         "ready_for_automation": bool(results) and all(
             row["status"] == "ok" and row["date_audit_status"] == "pass" for row in results),
@@ -348,6 +355,8 @@ def write_outputs(output_dir: Path, payload: dict) -> None:
              f"预期已收盘日线日期：{payload['market_clock']['expected_daily_date'] or '未知'}。",
              f"是否具备日期条件以接入每日自动运行：{'是' if payload['ready_for_automation'] else '否'}。",
              "抓取时间不是交易日期；未知日期不视为通过。unknown 候选只用于诊断，fail 候选移除且不补位。", "",
+             "快照交易日按来源原始字段记录；东方财富 em_datacenter 使用 MAX_TRADE_DATE。",
+             "日期 pass 仅表示来源声明日期与日线/日历一致，不证明逐股实际最后成交日、价格准确或数据完整。", "",
              f"运行状态：{payload['status']}；去重候选数：{len(codes)}（最多 10 只）", ""]
     for result in payload["strategies"]:
         lines += [f"## {result['label']}", ""]

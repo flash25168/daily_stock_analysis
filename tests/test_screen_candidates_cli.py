@@ -196,6 +196,38 @@ class CandidateTest(unittest.TestCase):
         clock = market_clock(datetime.fromisoformat("2026-10-22T10:00:00+08:00"))
         self.assertFalse(clock["closed_session"])
 
+    def test_eastmoney_original_query_max_trade_date_is_used(self):
+        path = self.output / "snapshot.json"
+        payload = {"created_at": "2026-10-22T00:36:00+08:00",
+                   "metadata": {"snapshot_source": "em_datacenter"},
+                   "frame": {"columns": ["code", "price", "MAX_TRADE_DATE", "TRADE_DATE"],
+                             "data": [["600001", 10, "2026-10-21", "2026-08-19"]]}}
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        snapshot = snapshot_dates(path)
+        self.assertEqual(snapshot["dates_by_code"], {"600001": "2026-10-21"})
+        audit = audit_pick_dates("600001", {"daily_trade_date": "2026-10-21"},
+                                 snapshot, self.clock())
+        self.assertEqual(audit["snapshot_trade_date_field"], "MAX_TRADE_DATE")
+        self.assertEqual(audit["date_audit_status"], "pass")
+
+    def test_eastmoney_date_missing_or_malformed_stays_unknown(self):
+        path = self.output / "snapshot.json"
+        for fields, values in ((["TRADE_DATE"], ["2026-10-21"]),
+                               (["MAX_TRADE_DATE"], ["invalid"])):
+            payload = {"created_at": "2026-10-22T00:36:00+08:00",
+                       "metadata": {"snapshot_source": "em_datacenter"},
+                       "frame": {"columns": ["code", *fields], "data": [["600001", *values]]}}
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertEqual(snapshot_dates(path)["dates_by_code"], {})
+
+    def test_other_provider_cannot_borrow_eastmoney_max_date_field(self):
+        path = self.output / "snapshot.json"
+        payload = {"metadata": {"snapshot_source": "sina"},
+                   "frame": {"columns": ["code", "MAX_TRADE_DATE"],
+                             "data": [["600001", "2026-10-21"]]}}
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        self.assertEqual(snapshot_dates(path)["dates_by_code"], {})
+
     def test_callback_audits_same_history_and_rejects_mismatched_pick(self):
         seen = []
 
