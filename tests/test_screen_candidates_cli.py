@@ -80,7 +80,7 @@ class CandidateTest(unittest.TestCase):
         self.assertNotIn("private", json.dumps(result))
         self.assertNotIn("private", safe_text("token=private"))
 
-    def test_workflow_only_exposes_pushplus_secrets_to_notification_step(self):
+    def test_workflow_limits_secrets_to_their_execution_stage(self):
         import yaml
         workflow = Path(__file__).resolve().parents[1] / ".github/workflows/01-screening-test.yml"
         text = workflow.read_text(encoding="utf-8")
@@ -94,10 +94,13 @@ class CandidateTest(unittest.TestCase):
         for step in data["jobs"]["screen"]["steps"]:
             step_text = json.dumps(step)
             if "secrets." in step_text:
-                self.assertIn("send_screening_candidates.py", step.get("run", ""))
-                self.assertEqual(set(step["env"]), {"PUSHPLUS_TOKEN", "PUSHPLUS_TOPIC", "EVENT_NAME"})
-        self.assertNotIn("OPENAI_API_KEY", text)
-        self.assertNotIn("LLM_CHANNELS", text)
+                command = step.get("run", "")
+                if "screening_ai.py analyze" in command:
+                    self.assertNotIn("PUSHPLUS_TOKEN", step["env"])
+                    self.assertIn("steps.reserve_ai_budget.outputs.artifact-id", step["env"]["RESERVATION_ID"])
+                else:
+                    self.assertTrue("send_screening_candidates.py" in command or "screening_ai.py send" in command)
+                    self.assertTrue(set(step["env"]).issubset({"PUSHPLUS_TOKEN", "PUSHPLUS_TOPIC", "EVENT_NAME"}))
         self.assertNotIn("main.py", text)
 
     def test_unexpected_model_marker_fails(self):

@@ -357,7 +357,7 @@ def write_outputs(output_dir: Path, payload: dict) -> None:
                                  signal["snapshot_trade_date"], signal["date_audit_status"]])
     notification = payload.get("notification", {})
     lines = ["# A股自动选股（因子筛选）", "", f"生成时间（北京时间）：{payload['created_at']}", "",
-             "仅执行本地因子筛选；未调用模型、未搜索新闻。",
+             "选股阶段仅执行本地因子筛选，不调用模型或搜索新闻；后续 AI 分析状态另列。",
              f"通知状态：{notification.get('status', 'not_requested')}；"
              f"{notification.get('message', '本次未请求发送通知。')}", "",
              "全市场快照初筛，每策略最多核验 "
@@ -375,6 +375,15 @@ def write_outputs(output_dir: Path, payload: dict) -> None:
              f"运行状态：{payload['status']}；去重候选数：{len(codes)}（最多 10 只）", ""]
     if payload.get("skip_reason"):
         lines += [f"本次跳过：{payload['skip_reason']}；未抓取行情、未发送通知。", ""]
+    if payload.get("ai_analysis"):
+        ai = payload["ai_analysis"]
+        labels = {"ready": "待分析", "started": "已开始，完成状态待确认", "success": "已完成",
+                  "incomplete": "仅部分完成", "failed": "失败，不自动重试",
+                  "blocked": "检查未通过，未调用模型", "skipped_no_session": "休市跳过",
+                  "skipped_no_candidates": "无候选，未调用模型",
+                  "skipped_daily_budget": "当天 AI 批次已占用，未再次调用模型"}
+        lines += [f"候选 AI 分析状态：{labels.get(ai['status'], ai['status'])}；"
+                  f"本批股票：{','.join(ai.get('selected_codes', ai.get('codes', []))) or '无'}。", ""]
     for result in payload["strategies"]:
         lines += [f"## {result['label']}", ""]
         if result["status"] != "ok":

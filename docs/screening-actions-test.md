@@ -2,7 +2,10 @@
 
 ## 中文说明
 
-### 版本 4（当前）：工作日自动选股及 PushPlus
+当前版本 5 已按用户选择接入收费 AI，并保留旧任务；详见 [候选 AI 分析配置](screening-ai-actions.md)。
+本页后续 v1–v4 内容记录此前无 AI 的筛选与推送行为，当前收费、额度及手动开关以新文档为准。
+
+### 版本 4：工作日自动选股及 PushPlus（历史行为）
 
 沿用 `01-screening-test.yml` 文件，显示名称更新为「每日自动选股（不调用AI）」。
 默认分支上的工作流设为 UTC 周一到周五 09:17，即北京时间 17:17 触发；GitHub 调度可能延迟，
@@ -153,7 +156,11 @@ v4 仅接入候选名单推送，未把名单交给模型分析；模型接入�
 
 ## English
 
-### Version 4 (current): scheduled factor screening and PushPlus
+Version 5 adds explicitly authorized paid analysis while preserving the old daily task.
+See [screening-ai-actions.md](screening-ai-actions.md) for the current behavior; the
+v1–v4 descriptions below document the earlier factor-only workflow.
+
+### Version 4: scheduled factor screening and PushPlus (historical behavior)
 
 The existing workflow file is renamed in the UI to 每日自动选股（不调用AI） and triggers
 at 09:17 UTC / 17:17 Beijing time on weekdays. GitHub scheduling can be delayed. The

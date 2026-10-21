@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 在保留原自选股任务的同时，为自动选股新增每日一批最多 3 只的原模型分析与 PushPlus 报告；调用前持久化并核验每日额度 artifact，异常不自动释放或重复付费。
+
 - [新功能] 因子选股工作流支持北京时间工作日 17:17 调度，交易日历和日期核验通过后复用现有 PushPlus 发送候选摘要，手动推送默认关闭，不调用 AI；记录异步受理与失败状态，PushPlus 传输升级 HTTPS。
 
 - [修复] 选股日期审计识别原东方财富快照返回的 MAX_TRADE_DATE，保留原始字段名，仅按来源声明核对日期，不把抓取时间或其他用途 TRADE_DATE 当作快照日期。
