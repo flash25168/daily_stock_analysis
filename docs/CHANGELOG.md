@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 新增手动 GitHub Actions 双策略选股测试入口，复用内置放量突破/缩量回踩策略，仅本地因子评分，输出最多 10 只去重候选与覆盖范围诊断，不调用 AI 或通知，不改动原每日分析工作流。
+
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
