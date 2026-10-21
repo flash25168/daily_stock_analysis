@@ -1,0 +1,63 @@
+name: 自动选股测试（不调用AI）
+
+on:
+  workflow_dispatch:
+    inputs:
+      daily_limit:
+        description: 每策略日线核验上限（首次选30；不是逐股全量扫描）
+        type: choice
+        default: '30'
+        options:
+          - '30'
+          - '100'
+          - '300'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screening-factor-test
+  cancel-in-progress: false
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: 安装依赖
+        run: python -m pip install -r requirements.txt
+      - name: 离线回归检查（不请求行情或模型）
+        run: python -m unittest discover -s tests -p test_screen_candidates_cli.py -v
+      - name: 仅测试两套选股策略
+        env:
+          PYTHONUNBUFFERED: '1'
+          TZ: Asia/Shanghai
+          DAILY_LIMIT: ${{ inputs.daily_limit }}
+          SCREENING_SNAPSHOT_CALL_TIMEOUT_SEC: '60'
+          SCREENING_DAILY_CALL_TIMEOUT_SEC: '15'
+        run: python scripts/screen_candidates.py --daily-limit "$DAILY_LIMIT"
+      - name: 展示结果
+        if: always()
+        run: |
+          if [ -f reports/screening_test/screening_report.md ]; then
+            cat reports/screening_test/screening_report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: 下载选股结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screening-test-${{ github.run_number }}
+          path: |
+            reports/screening_test/screening_report.md
+            reports/screening_test/screening_result.json
+            reports/screening_test/candidates.csv
+            reports/screening_test/candidate_codes.txt
+          if-no-files-found: warn
+          retention-days: 7
