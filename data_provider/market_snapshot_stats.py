@@ -17,19 +17,22 @@ def aggregate_snapshot(df: pd.DataFrame, expected_date: str) -> dict:
         raise ValueError('insufficient Shanghai/Shenzhen coverage')
     amounts = pd.to_numeric(frame.DEAL_AMOUNT, errors='coerce')
     changes = pd.to_numeric(frame.CHANGE_RATE, errors='coerce')
-    if amounts.isna().any() or (~amounts.between(0, 1e14)).any():
+    if ((amounts.notna()) & (~amounts.between(0, 1e14))).any():
         raise ValueError('invalid turnover')
     traded = amounts > 0
-    if not traded.any() or changes[traded].isna().any() or (~changes[traded].between(-100, 1000)).any():
+    if int(traded.sum()) < 3000 or changes[traded].isna().any() or (~changes[traded].between(-100, 1000)).any():
         raise ValueError('invalid traded rows')
     dates = pd.to_datetime(frame.loc[traded, 'MAX_TRADE_DATE'], errors='coerce')
     if dates.isna().any() or not dates.dt.strftime('%Y-%m-%d').eq(expected_date).all():
         raise ValueError('stale or unknown trade date')
     pct = changes[traded]
-    return dict(up_count=int((pct > 0).sum()), down_count=int((pct < 0).sum()),
-                flat_count=int((pct == 0).sum()), total_amount=float(amounts.sum() / 1e8),
-                source='em_datacenter', trade_date=expected_date, source_rows=len(df),
-                scope='Shanghai/Shenzhen A-shares with turnover > 0; source-declared coverage/date')
+    sample = dict(up_count=int((pct > 0).sum()), down_count=int((pct < 0).sum()),
+                  flat_count=int((pct == 0).sum()), amount_yi=float(amounts[traded].sum() / 1e8),
+                  covered_rows=int(traded.sum()), unknown_amount_rows=int(amounts.isna().sum()),
+                  zero_amount_rows=int(amounts.eq(0).sum()), sh_sz_rows=len(frame))
+    # Do not fill canonical full-market fields with a partial sample.
+    return dict(sample_stats=sample, source='em_datacenter', trade_date=expected_date,
+                source_rows=len(df), scope='沪深已覆盖交易样本；非完整市场统计；未知成交额不按零处理')
 
 
 def fetch_snapshot_stats() -> dict:
