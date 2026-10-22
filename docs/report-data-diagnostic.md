@@ -9,3 +9,6 @@
 Validation: three offline output/redaction tests and syntax compilation passed. No live endpoint or full workflow validation was run locally; full dependencies install in Actions. No model or notification initialized. Financial blocks are summarized, not a proof of independently verified financial-statement completeness.
 
 回滚：删除此诊断工作流即可停用；新增脚本和文档不会改动原分析任务、选股任务、调度、模型或推送设置。
+
+
+增强诊断：列出最多30条成交额异常记录的白名单公开行情字段；缺少明确状态仍标记停牌未验证，不能推断为零成交。财务错误按阶段预算耗尽、超时、连接、权限、限流、解析、不支持、空结果等分类，未知保留unclassified，不输出原始错误。来源链仅允许简短来源名、状态、耗时和错误类别。新增5项离线测试通过；未在线验证。本次无需修改工作流。

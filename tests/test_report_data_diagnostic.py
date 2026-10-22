@@ -21,5 +21,22 @@ class DiagnosticTests(unittest.TestCase):
     def test_missing_shell(self):
         self.assertEqual(module.summarize_block(None)['status'], 'missing')
 
+    def test_error_categories_hide_original_strings(self):
+        self.assertEqual(module.error_category('fundamental stage timeout'), 'stage_budget_exhausted')
+        result = module.summarize_block({'errors': ['secret=xxx connection aborted'],
+                   'source_chain': [{'provider': 'AkshareFetcher', 'error': 'private-url timeout'}]})
+        self.assertNotIn('secret', str(result))
+        self.assertNotIn('private-url', str(result))
+        self.assertIn('connection_failure', result['error_categories'])
+
+    def test_missing_amount_is_not_assumed_suspended(self):
+        import pandas as pd
+        frame = pd.DataFrame({'SECURITY_CODE': ['600001', '600002'], 'DEAL_AMOUNT': [None, 100],
+                              'NEW_PRICE': [12, 13], 'unrelated_secret': ['hidden', 'hidden']})
+        result = module.missing_amount_details(frame)
+        self.assertEqual(result['count'], 1)
+        self.assertFalse(result['rows'][0]['suspension_verified'])
+        self.assertNotIn('hidden', str(result))
+
 
 if __name__ == '__main__': unittest.main()

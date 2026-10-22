@@ -21,6 +21,42 @@ def safe_failure(exc):
     return str(exc) if type(exc) is ValueError and str(exc) in VALIDATION_REASONS else type(exc).__name__
 
 
+def error_category(value):
+    text = str(value).lower()
+    for category, words in (
+        ('stage_budget_exhausted', ('stage timeout', 'budget exhausted')),
+        ('timeout', ('timeout', 'timed out', '超时')),
+        ('connection_failure', ('connection', 'remote', 'disconnect', '连接')),
+        ('authentication_or_permission', ('unauthorized', 'forbidden', 'permission', '权限', '401', '403')),
+        ('rate_limited', ('429', 'rate limit', '限流')),
+        ('response_parse_failure', ('json', 'expecting value', 'decode')),
+        ('not_supported', ('not supported', 'not_supported', '不支持')),
+        ('empty_result', ('empty', 'no data', '无数据', '空结果')),
+    ):
+        if any(word in text for word in words):
+            return category
+    return 'unclassified'
+
+
+def missing_amount_details(frame):
+    import pandas as pd
+    amounts = pd.to_numeric(frame.DEAL_AMOUNT, errors='coerce')
+    bad = frame.loc[~amounts.between(0, 1e14)]
+    rows = []
+    for _, row in bad.head(30).iterrows():
+        record = {'suspension_verified': False}
+        # Public market fields only; no arbitrary payload/error strings.
+        for key in ('SECURITY_CODE', 'SECURITY_NAME_ABBR', 'MAX_TRADE_DATE',
+                    'NEW_PRICE', 'CHANGE_RATE', 'DEAL_AMOUNT', 'VOLUME',
+                    'TRADE_STATUS', 'TRADE_STATE', 'SUSPEND_FLAG'):
+            if key in frame.columns:
+                value = row[key]
+                record[key] = None if pd.isna(value) else str(value)[:80]
+        rows.append(record)
+    return {'count': len(bad), 'sample_limit': 30, 'rows': rows,
+            'interpretation': 'Missing amount is unknown, not verified suspension or zero turnover.'}
+
+
 def summarize_block(block):
     if not isinstance(block, dict):
         return {'status': 'missing', 'populated_fields': []}
@@ -32,7 +68,24 @@ def summarize_block(block):
     status = block.get('status')
     return {'status': status if status in ('ok', 'partial', 'failed', 'not_supported', 'timeout', 'success', 'empty', 'disabled') else 'unknown',
             'populated_fields': sorted(keys), 'error_count': len(block.get('errors') or []),
-            'source_count': len(block.get('source_chain') or [])}
+            'source_count': len(block.get('source_chain') or []),
+            'error_categories': sorted(set(error_category(item) for item in (block.get('errors') or []))),
+            'sources': [summarize_source(item) for item in (block.get('source_chain') or []) if isinstance(item, dict)]}
+
+
+def summarize_source(item):
+    result = {}
+    for key in ('source', 'provider', 'status'):
+        value = item.get(key)
+        if isinstance(value, str) and value.replace('_', '').replace('-', '').isalnum() and len(value) <= 60:
+            result[key] = value
+    for key in ('elapsed_ms', 'cost_ms', 'duration_ms'):
+        if isinstance(item.get(key), (int, float)):
+            result[key] = item[key]
+    for key in ('error', 'reason', 'message'):
+        if item.get(key):
+            result[key + '_category'] = error_category(item[key])
+    return result
 
 
 def diagnose():
@@ -67,6 +120,7 @@ def diagnose():
             amounts = pd.to_numeric(frame.DEAL_AMOUNT, errors='coerce')
             snap['amount_missing'] = int(amounts.isna().sum())
             snap['amount_invalid'] = int((~amounts.between(0, 1e14)).sum())
+            snap['missing_amount_details'] = missing_amount_details(frame)
             active = amounts.gt(0)
             snap['traded_rows'] = int(active.sum())
             if 'MAX_TRADE_DATE' in frame:
