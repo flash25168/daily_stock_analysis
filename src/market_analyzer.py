@@ -100,6 +100,7 @@ class MarketOverview:
     limit_up_count: int = 0             # 涨停家数
     limit_down_count: int = 0           # 跌停家数
     total_amount: float = 0.0           # 两市成交额（亿元）
+    stats_available_fields: Optional[List[str]] = None  # None: legacy/in-memory overview
     # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
     
     # 板块涨幅榜
@@ -621,18 +622,23 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
     def _get_market_statistics(self, overview: MarketOverview):
         """获取市场涨跌统计"""
+        overview.stats_available_fields = []
         try:
             logger.info("[大盘] %s action=get_market_stats status=start", self._log_context())
 
             stats = self.data_manager.get_market_stats(purpose=f"market_review:{self.region}")
 
             if stats:
-                overview.up_count = stats.get('up_count', 0)
-                overview.down_count = stats.get('down_count', 0)
-                overview.flat_count = stats.get('flat_count', 0)
-                overview.limit_up_count = stats.get('limit_up_count', 0)
-                overview.limit_down_count = stats.get('limit_down_count', 0)
-                overview.total_amount = stats.get('total_amount', 0.0)
+                # Preserve missing fields instead of turning them into genuine zeroes.
+                for name in ('up_count', 'down_count', 'flat_count',
+                             'limit_up_count', 'limit_down_count', 'total_amount'):
+                    value = stats.get(name)
+                    if isinstance(value, (int, float)) and not isinstance(value, bool) and pd.notna(value) and 0 <= value < float('inf'):
+                        setattr(overview, name, value)
+                        overview.stats_available_fields.append(name)
+                # An all-zero breadth/turnover response is not a usable market snapshot.
+                if not (overview.up_count + overview.down_count + overview.flat_count > 0 or overview.total_amount > 0):
+                    overview.stats_available_fields = []
 
                 logger.info(
                     "[大盘] %s action=get_market_stats status=success up=%s down=%s flat=%s "
@@ -1056,12 +1062,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         if has_breadth_data:
             payload["breadth"] = {
-                "up_count": overview.up_count,
-                "down_count": overview.down_count,
-                "flat_count": overview.flat_count,
-                "limit_up_count": overview.limit_up_count,
-                "limit_down_count": overview.limit_down_count,
-                "total_amount": overview.total_amount,
+                **self._market_stats_values(overview),
                 "turnover_unit": self._get_turnover_unit_label(),
             }
 
@@ -1193,61 +1194,52 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         # Insert the block before the next heading, with spacing
         return text[:insert_pos].rstrip() + '\n\n' + block + '\n\n' + text[insert_pos:].lstrip('\n')
 
+    def _market_stats_values(self, overview: MarketOverview) -> Dict[str, Any]:
+        """Return only observed statistics; missing data must not become zero facts."""
+        names = ('up_count', 'down_count', 'flat_count',
+                 'limit_up_count', 'limit_down_count', 'total_amount')
+        fields = overview.stats_available_fields
+        if fields is None:
+            # Compatibility for callers constructing overviews directly.
+            fields = []
+            if overview.up_count + overview.down_count + overview.flat_count > 0:
+                fields.extend(names[:5])
+            if overview.total_amount > 0:
+                fields.append('total_amount')
+        return {name: getattr(overview, name) if name in fields and
+                (name != 'total_amount' or overview.total_amount > 0) else None
+                for name in names}
+
+    def _market_stats_text(self, overview: MarketOverview) -> str:
+        values = self._market_stats_values(overview)
+        english = self._get_review_language() == 'en'
+        missing = 'Data unavailable' if english else '数据不可用'
+        labels = (('Advancers', 'Decliners', 'Flat', 'Limit-up', 'Limit-down', 'Turnover')
+                  if english else ('上涨家数', '下跌家数', '平盘家数', '涨停家数', '跌停家数', '两市成交额'))
+        lines = []
+        for label, (name, value) in zip(labels, values.items()):
+            text = missing if value is None else (f'{value:.0f} ({self._get_turnover_unit_label()})' if name == 'total_amount' else str(value))
+            lines.append(f'- {label}: {text}')
+        if any(value is None for value in values.values()):
+            lines.append('Data is incomplete: do not interpret missing values as zero, or infer turnover/breadth/fund flows from them.' if english else '数据不完整：缺失值不代表零，不得据此判断成交量能、市场宽度或资金流向。')
+        return '\n'.join(lines)
+
     def _build_stats_block(self, overview: MarketOverview) -> str:
         """Build market statistics block."""
-        has_stats = overview.up_count or overview.down_count or overview.total_amount
-        has_market_signal = bool(self._supports_market_light() and (overview.indices or has_stats))
-        if not has_stats and not has_market_signal:
-            return ""
-        light = self.build_market_light_snapshot(overview) if has_market_signal else None
-        if self._get_review_language() == "en":
-            lines = []
-            if isinstance(light, dict):
-                lines.extend(
-                    [
-                        f"- **Market Signal**: {light['score']}/100 "
-                        f"({light['temperature_label']}, {light['label']})",
-                        f"- **Drivers**: {'; '.join(light['reasons'])}",
-                        f"- **Guidance**: {light['guidance']}",
-                    ]
-                )
-            if has_stats:
-                if lines:
-                    lines.append("")
-                lines.append(
-                    f"- **Breadth**: Advancers {overview.up_count} / Decliners {overview.down_count} / "
-                    f"Flat {overview.flat_count}; "
-                    f"Limit-up {overview.limit_up_count} / Limit-down {overview.limit_down_count}; "
-                    f"Turnover {overview.total_amount:.0f} ({self._get_turnover_unit_label()})"
-                )
-            return "\n".join(lines)
         lines = []
-        score = light["score"] if isinstance(light, dict) else None
-        label = light["temperature_label"] if isinstance(light, dict) else ""
-        participation = overview.up_count + overview.down_count
-        up_ratio = overview.up_count / participation if participation else 0.0
-        limit_spread = overview.limit_up_count - overview.limit_down_count
-        if isinstance(light, dict) and score is not None:
-            lines.extend(
-                [
-                    f"- **盘面信号**：{score}/100（{label}，{light['label']}）",
-                    f"- **信号依据**：{'；'.join(light['reasons'])}",
-                    f"- **操作建议**：{light['guidance']}",
-                ]
-            )
-        if has_stats:
-            if lines:
-                lines.append("")
-            lines.extend(
-                [
-                    "| 指标 | 数值 | 观察 |",
-                    "|------|------|------|",
-                    f"| 上涨/下跌/平盘 | {overview.up_count} / {overview.down_count} / {overview.flat_count} | 上涨占比(不含平盘) {up_ratio:.1%} |",
-                    f"| 涨停/跌停 | {overview.limit_up_count} / {overview.limit_down_count} | 涨跌停差 {limit_spread:+d} |",
-                    f"| 两市成交额 | {overview.total_amount:.0f} 亿 | {self._describe_turnover(overview.total_amount)} |",
-                ]
-            )
-        return "\n".join(lines)
+        if self._supports_market_light() and overview.indices:
+            light = self.build_market_light_snapshot(overview)
+            if self._get_review_language() == 'en':
+                lines.extend([f"- **Market Signal**: {light['score']}/100 ({light['temperature_label']}, {light['label']})",
+                              f"- **Drivers**: {'; '.join(light['reasons'])}",
+                              f"- **Guidance**: {light['guidance']}"])
+            else:
+                lines.extend([f"- **盘面信号**：{light['score']}/100（{light['temperature_label']}，{light['label']}）",
+                              f"- **信号依据**：{'；'.join(light['reasons'])}",
+                              f"- **操作建议**：{light['guidance']}"])
+        if self.profile.has_market_stats:
+            lines.extend(['', self._market_stats_text(overview)])
+        return '\n'.join(lines).strip()
 
     def build_market_light_snapshot(self, overview: MarketOverview) -> Dict[str, Any]:
         """Build a deterministic market-light snapshot from structured breadth data."""
@@ -1301,8 +1293,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         return snapshot.model_dump()
 
     def _build_market_light_reasons_zh(self, overview: MarketOverview, score: int) -> List[str]:
+        values = self._market_stats_values(overview)
         participation = overview.up_count + overview.down_count
-        up_ratio = overview.up_count / participation if participation else None
+        up_ratio = overview.up_count / participation if participation and values["up_count"] is not None and values["down_count"] is not None else None
         reasons: List[str] = []
         if up_ratio is not None:
             if up_ratio >= 0.6:
@@ -1315,17 +1308,18 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if index_changes:
             avg_change = sum(index_changes) / len(index_changes)
             reasons.append(f"主要指数平均涨跌幅 {avg_change:+.2f}%")
-        if overview.limit_up_count or overview.limit_down_count:
+        if values["limit_up_count"] is not None and values["limit_down_count"] is not None and (overview.limit_up_count or overview.limit_down_count):
             reasons.append(f"涨跌停差 {overview.limit_up_count - overview.limit_down_count:+d}")
-        if not reasons and overview.total_amount:
+        if not reasons and values["total_amount"]:
             reasons.append(f"成交额 {overview.total_amount:.0f} 亿，{self._describe_turnover(overview.total_amount)}")
         if not reasons:
             reasons.append("结构化涨跌数据有限，按可用行情综合判断")
         return reasons[:4]
 
     def _build_market_light_reasons_en(self, overview: MarketOverview, score: int) -> List[str]:
+        values = self._market_stats_values(overview)
         participation = overview.up_count + overview.down_count
-        up_ratio = overview.up_count / participation if participation else None
+        up_ratio = overview.up_count / participation if participation and values["up_count"] is not None and values["down_count"] is not None else None
         reasons: List[str] = []
         if up_ratio is not None:
             if up_ratio >= 0.6:
@@ -1338,9 +1332,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if index_changes:
             avg_change = sum(index_changes) / len(index_changes)
             reasons.append(f"average major-index change {avg_change:+.2f}%")
-        if overview.limit_up_count or overview.limit_down_count:
+        if values["limit_up_count"] is not None and values["limit_down_count"] is not None and (overview.limit_up_count or overview.limit_down_count):
             reasons.append(f"limit-up/down spread {overview.limit_up_count - overview.limit_down_count:+d}")
-        if not reasons and overview.total_amount:
+        if not reasons and values["total_amount"]:
             reasons.append(f"turnover {overview.total_amount:.0f} ({self._get_turnover_unit_label()})")
         if not reasons:
             reasons.append("limited structured breadth data; using available market inputs")
@@ -1507,8 +1501,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
     def _build_market_light_scores(self, overview: MarketOverview) -> Dict[str, Any]:
         """Build the canonical Market Light scores used by reports and alerts."""
 
-        participants = overview.up_count + overview.down_count
-        breadth_available = bool(self.profile.has_market_stats and participants > 0)
+        values = self._market_stats_values(overview)
+        participants = (values["up_count"] or 0) + (values["down_count"] or 0)
+        breadth_available = bool(self.profile.has_market_stats and participants > 0 and values["up_count"] is not None and values["down_count"] is not None)
         breadth_score = 50
         if breadth_available:
             breadth_score = int(overview.up_count / participants * 100)
@@ -1521,7 +1516,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             index_score = int(max(0, min(100, 50 + avg_change * 12)))
 
         limit_total = overview.limit_up_count + overview.limit_down_count
-        limit_available = bool(self.profile.has_market_stats and limit_total > 0)
+        limit_available = bool(self.profile.has_market_stats and limit_total > 0 and values["limit_up_count"] is not None and values["limit_down_count"] is not None)
         limit_score = 50
         if limit_available:
             limit_score = int(overview.limit_up_count / limit_total * 100)
@@ -1688,10 +1683,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         data_limits_block = ""
         if review_language == "en":
             if self.profile.has_market_stats:
-                stats_block = f"""## Market Breadth
-- Advancers: {overview.up_count} | Decliners: {overview.down_count} | Flat: {overview.flat_count}
-- Limit-up: {overview.limit_up_count} | Limit-down: {overview.limit_down_count}
-- Turnover: {overview.total_amount:.0f} ({self._get_turnover_unit_label()})"""
+                stats_block = "## Market Breadth\n" + self._market_stats_text(overview)
 
             if self.profile.has_sector_rankings:
                 sector_block = f"""## Sector / Theme Performance
@@ -1711,10 +1703,7 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
                 data_limits_block = "## Data Limits\n" + "\n".join(data_limit_lines)
         else:
             if self.profile.has_market_stats:
-                stats_block = f"""## 市场概况
-- 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家
-- 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
-- 两市成交额: {overview.total_amount:.0f} 亿元"""
+                stats_block = "## 市场概况\n" + self._market_stats_text(overview)
 
             if self.profile.has_sector_rankings:
                 sector_block = f"""## 板块表现
