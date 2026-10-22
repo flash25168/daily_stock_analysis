@@ -475,6 +475,10 @@ def _fetch_sina() -> pd.DataFrame:
 
 
 def _fetch_em_datacenter() -> pd.DataFrame:
+    return _normalize(fetch_em_datacenter_raw(), source="em_datacenter")
+
+
+def fetch_em_datacenter_raw() -> pd.DataFrame:
     """Fetch via eastmoney datacenter xuangu API.
 
     This works even on weekends (returns last trading day data).
@@ -483,6 +487,7 @@ def _fetch_em_datacenter() -> pd.DataFrame:
     all_items = []
     page = 1
     page_size = 500
+    expected_count = None
 
     while True:
         params = {
@@ -509,9 +514,13 @@ def _fetch_em_datacenter() -> pd.DataFrame:
             raise RuntimeError(f"em_datacenter API error: {data.get('message', 'unknown')}")
 
         items = data["result"]["data"]
+        total_count = int(data["result"]["count"])
+        if expected_count is None:
+            expected_count = total_count
+        if total_count != expected_count or not items or page > 100:
+            raise RuntimeError("em_datacenter pagination incomplete or changed")
         all_items.extend(items)
 
-        total_count = data["result"]["count"]
         if page * page_size >= total_count:
             break
         page += 1
@@ -520,7 +529,10 @@ def _fetch_em_datacenter() -> pd.DataFrame:
         raise RuntimeError("em_datacenter returned no data")
 
     df = pd.DataFrame(all_items)
-    return _normalize(df, source="em_datacenter")
+    if len(df) != expected_count:
+        raise RuntimeError("em_datacenter row count mismatch")
+    df.attrs["reported_count"] = expected_count
+    return df
 
 
 def _eastmoney_get(url: str, **kwargs) -> requests.Response:

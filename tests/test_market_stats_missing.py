@@ -103,6 +103,17 @@ class MissingMarketStatsTests(unittest.TestCase):
         self.assertNotIn('两市成交额: 0', prompt)
         self.assertIn('缺失值不代表零', prompt)
 
+    def test_partial_signal_explicit_and_mobile_indices(self):
+        obj = overview(indices=[SimpleNamespace(name='测试指数', current=3000, change_pct=-1,
+                        open=3010, high=3020, low=2990, amplitude=1, amount=1e10)])
+        self.a._supports_market_light = lambda: True
+        self.a.build_market_light_snapshot = lambda overview: dict(score=40, temperature_label='震荡', label='需观察',
+                    reasons=['指数'], guidance='观察', data_quality='partial')
+        self.assertIn('信号不完整', self.a._build_stats_block(obj))
+        text = self.a._build_indices_block(obj)
+        self.assertIn('3000.00', text)
+        self.assertNotIn('|', text)
+
 
 if __name__ == '__main__':
     unittest.main()

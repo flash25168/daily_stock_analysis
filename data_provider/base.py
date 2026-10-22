@@ -3408,6 +3408,15 @@ class DataFetcherManager:
                     e,
                 )
                 continue
+        # Last resort: reuse the existing screening endpoint, with strict validation.
+        if purpose.endswith(":cn"):
+            try:
+                from data_provider.market_snapshot_stats import fetch_snapshot_stats
+                data = fetch_snapshot_stats()
+                logger.info("[MarketStats] provider=em_datacenter status=success date=%s rows=%s", data["trade_date"], data["source_rows"])
+                return data
+            except Exception as exc:
+                logger.warning("[MarketStats] provider=em_datacenter status=unavailable reason=%s", type(exc).__name__)
         logger.warning("[MarketStats] component=market_stats action=complete status=empty purpose=%s", purpose)
         return {}
 

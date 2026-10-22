@@ -100,6 +100,7 @@ class MarketOverview:
     limit_up_count: int = 0             # 涨停家数
     limit_down_count: int = 0           # 跌停家数
     total_amount: float = 0.0           # 两市成交额（亿元）
+    stats_metadata: Optional[Dict[str, Any]] = None
     stats_available_fields: Optional[List[str]] = None  # None: legacy/in-memory overview
     # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
     
@@ -629,6 +630,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             stats = self.data_manager.get_market_stats(purpose=f"market_review:{self.region}")
 
             if stats:
+                overview.stats_metadata = {key: stats[key] for key in ("source", "trade_date", "source_rows", "scope") if key in stats}
                 # Preserve missing fields instead of turning them into genuine zeroes.
                 for name in ('up_count', 'down_count', 'flat_count',
                              'limit_up_count', 'limit_down_count', 'total_amount'):
@@ -1222,6 +1224,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             lines.append(f'- {label}: {text}')
         if any(value is None for value in values.values()):
             lines.append('Data is incomplete: do not interpret missing values as zero, or infer turnover/breadth/fund flows from them.' if english else '数据不完整：缺失值不代表零，不得据此判断成交量能、市场宽度或资金流向。')
+        metadata = getattr(overview, 'stats_metadata', None) or {}
+        if metadata:
+            lines.append(f"Source: {metadata.get('source', '-')} | Date: {metadata.get('trade_date', '-')} | Scope: {metadata.get('scope', '-')}")
         return '\n'.join(lines)
 
     def _build_stats_block(self, overview: MarketOverview) -> str:
@@ -1229,6 +1234,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         lines = []
         if self._supports_market_light() and overview.indices:
             light = self.build_market_light_snapshot(overview)
+            incomplete = light.get('data_quality') != 'ok'
+            if incomplete:
+                lines.append('**Incomplete signal: score is indicative only.**' if self._get_review_language() == 'en' else '**信号不完整：评分仅为有限数据下的参考值。**')
             if self._get_review_language() == 'en':
                 lines.extend([f"- **Market Signal**: {light['score']}/100 ({light['temperature_label']}, {light['label']})",
                               f"- **Drivers**: {'; '.join(light['reasons'])}",
@@ -1344,26 +1352,18 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         """构建指数行情表格"""
         if not overview.indices:
             return ""
-        if self._get_review_language() == "en":
-            lines = [
-                f"| Index | Last | Change % | Open | High | Low | Amplitude | Turnover ({self._get_turnover_unit_label()}) |",
-                "|-------|------|----------|------|------|-----|-----------|-----------------|",
-            ]
-        else:
-            lines = [
-                "| 指数 | 最新 | 涨跌幅 | 开盘 | 最高 | 最低 | 振幅 | 成交额(亿) |",
-                "|------|------|--------|------|------|------|------|-----------|",
-            ]
+        english = self._get_review_language() == 'en'
+        lines = []
         for idx in overview.indices:
-            arrow = self._get_index_change_arrow(idx.change_pct)
-            amount_raw = idx.amount or 0.0
-            amount_str = self._format_turnover_value(amount_raw)
-            lines.append(
-                f"| {idx.name} | {idx.current:.2f} | {arrow} {idx.change_pct:+.2f}% | "
-                f"{self._format_optional_number(idx.open)} | {self._format_optional_number(idx.high)} | "
-                f"{self._format_optional_number(idx.low)} | {self._format_optional_pct(idx.amplitude)} | {amount_str} |"
-            )
-        return "\n".join(lines)
+            lines.extend([
+                f"**{idx.name}**",
+                f"- {'Last / Change' if english else '最新 / 涨跌幅'}: {idx.current:.2f} / {idx.change_pct:+.2f}%",
+                f"- {'Open / High / Low' if english else '开盘 / 最高 / 最低'}: {self._format_optional_number(idx.open)} / {self._format_optional_number(idx.high)} / {self._format_optional_number(idx.low)}",
+                f"- {'Amplitude' if english else '振幅'}: {self._format_optional_pct(idx.amplitude)}",
+                f"- {'Turnover' if english else '成交额'} ({self._get_turnover_unit_label()}): {self._format_turnover_value(idx.amount or 0.0)}",
+                '',
+            ])
+        return '\n'.join(lines).strip()
 
     def _build_sector_block(self, overview: MarketOverview) -> str:
         """Build industry and concept ranking blocks."""
