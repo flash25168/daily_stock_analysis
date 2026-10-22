@@ -1,0 +1,43 @@
+name: 数据源诊断（不调用AI）
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: 安装依赖
+        run: python -m pip install -r requirements.txt
+      - name: 离线诊断输出测试
+        run: python -m unittest discover -s tests -p test_report_data_diagnostic.py -v
+      - name: 只检查数据（无模型和通知密钥）
+        env:
+          PYTHONUNBUFFERED: '1'
+          TZ: Asia/Shanghai
+        run: python scripts/diagnose_report_data.py
+      - name: 显示诊断结果
+        if: always()
+        run: |
+          if [ -f reports/data_diagnostics/diagnostic.md ]; then
+            cat reports/data_diagnostics/diagnostic.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: 保存诊断结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-diagnostic-${{ github.run_number }}
+          path: reports/data_diagnostics/
+          retention-days: 7
+          if-no-files-found: warn
