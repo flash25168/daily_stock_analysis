@@ -624,13 +624,14 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
     def _get_market_statistics(self, overview: MarketOverview):
         """获取市场涨跌统计"""
         overview.stats_available_fields = []
+        overview.stats_metadata = None
         try:
             logger.info("[大盘] %s action=get_market_stats status=start", self._log_context())
 
             stats = self.data_manager.get_market_stats(purpose=f"market_review:{self.region}")
 
             if stats:
-                overview.stats_metadata = {key: stats[key] for key in ("source", "trade_date", "source_rows", "scope") if key in stats}
+                overview.stats_metadata = {key: stats[key] for key in ("source", "trade_date", "source_rows", "scope", "sample_stats") if key in stats}
                 # Preserve missing fields instead of turning them into genuine zeroes.
                 for name in ('up_count', 'down_count', 'flat_count',
                              'limit_up_count', 'limit_down_count', 'total_amount'):
@@ -1227,6 +1228,33 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         metadata = getattr(overview, 'stats_metadata', None) or {}
         if metadata:
             lines.append(f"Source: {metadata.get('source', '-')} | Date: {metadata.get('trade_date', '-')} | Scope: {metadata.get('scope', '-')}")
+            sample = metadata.get('sample_stats')
+            if isinstance(sample, dict):
+                count_keys = ('up_count', 'down_count', 'flat_count', 'covered_rows',
+                              'unknown_amount_rows', 'zero_amount_rows', 'sh_sz_rows')
+                counts_valid = all(isinstance(sample.get(k), int) and not isinstance(sample[k], bool)
+                                   and sample[k] >= 0 for k in count_keys)
+                amount = sample.get('amount_yi')
+                amount_valid = (isinstance(amount, (int, float)) and not isinstance(amount, bool)
+                                and pd.notna(amount) and 0 <= amount < float('inf'))
+                if (counts_valid and amount_valid
+                        and sum(sample[k] for k in count_keys[:3]) == sample['covered_rows']
+                        and sample['covered_rows'] + sample['unknown_amount_rows']
+                        + sample['zero_amount_rows'] == sample['sh_sz_rows']):
+                    if english:
+                        lines.extend(['**Available sample only — not full-market statistics:**',
+                            f"- Covered traded rows: {sample['covered_rows']}/{sample['sh_sz_rows']}",
+                            f"- Sample advancers / decliners / flat: {sample['up_count']} / {sample['down_count']} / {sample['flat_count']}",
+                            f"- Sample turnover (CNY 100 million): {amount:.2f}",
+                            f"- Unknown turnover rows: {sample['unknown_amount_rows']}; verified numeric zero rows: {sample['zero_amount_rows']}",
+                            'Unknown turnover is not zero or proof of suspension. Do not substitute this sample for full-market breadth, limit counts or signal scoring.'])
+                    else:
+                        lines.extend(['**可用样本统计（非完整市场统计）：**',
+                            f"- 已覆盖交易样本：{sample['covered_rows']}/{sample['sh_sz_rows']} 条",
+                            f"- 样本上涨 / 下跌 / 平盘：{sample['up_count']} / {sample['down_count']} / {sample['flat_count']}",
+                            f"- 样本成交额：{amount:.2f} 亿元",
+                            f"- 成交额未知：{sample['unknown_amount_rows']} 条；数值确认为零：{sample['zero_amount_rows']} 条",
+                            '未知成交额不等于零，也不能据此认定停牌；样本不能替代全市场涨跌家数、涨跌停统计或完整市场信号评分。'])
         return '\n'.join(lines)
 
     def _build_stats_block(self, overview: MarketOverview) -> str:
