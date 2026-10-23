@@ -24,6 +24,8 @@ jobs:
         run: python -m unittest discover -s tests -p test_report_data_diagnostic.py -v
       - name: 只检查数据（无模型和通知密钥）
         env:
+          FUNDAMENTAL_STAGE_TIMEOUT_SECONDS: ${{ vars.FUNDAMENTAL_STAGE_TIMEOUT_SECONDS || '8.0' }}
+          FUNDAMENTAL_FETCH_TIMEOUT_SECONDS: ${{ vars.FUNDAMENTAL_FETCH_TIMEOUT_SECONDS || '8.0' }}
           PYTHONUNBUFFERED: '1'
           TZ: Asia/Shanghai
         run: python scripts/diagnose_report_data.py

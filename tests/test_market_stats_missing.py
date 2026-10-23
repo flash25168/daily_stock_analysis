@@ -92,6 +92,48 @@ class MissingMarketStatsTests(unittest.TestCase):
         self.a._get_review_language = lambda: 'en'
         self.assertIn('Data unavailable', self.a._market_stats_text(self.fetch(None)))
 
+    def sample_result(self):
+        return dict(source='em_datacenter', trade_date='2026-10-22',
+                    scope='沪深已覆盖交易样本；非完整市场统计',
+                    sample_stats=dict(up_count=2000, down_count=3000, flat_count=218,
+                                      amount_yi=12345.67, covered_rows=5218,
+                                      unknown_amount_rows=7, zero_amount_rows=0, sh_sz_rows=5225))
+
+    def test_sample_visible_without_becoming_full_market_data(self):
+        obj = self.fetch(self.sample_result())
+        text = self.a._market_stats_text(obj)
+        self.assertIn('5218/5225', text)
+        self.assertIn('成交额未知：7', text)
+        self.assertIn('12345.67', text)
+        self.assertIn('非完整市场统计', text)
+        self.assertTrue(all(v is None for v in self.a._market_stats_values(obj).values()))
+        self.assertEqual(obj.stats_available_fields, [])
+
+    def test_sample_reaches_prompt_with_scope_warning(self):
+        self.a.profile.has_sector_rankings = False
+        self.a._get_output_language = lambda: 'zh'
+        self.a._get_market_scope_name = lambda language: 'A股'
+        self.a._get_index_hint = lambda: ''
+        self.a._get_strategy_prompt_block = lambda: ''
+        prompt = self.a._build_review_prompt(self.fetch(self.sample_result()), [])
+        self.assertIn('5218/5225', prompt)
+        self.assertIn('不能替代全市场', prompt)
+        self.assertIn('上涨家数: 数据不可用', prompt)
+
+    def test_invalid_sample_is_not_rendered(self):
+        for key, value in (('amount_yi', float('nan')), ('covered_rows', -1), ('unknown_amount_rows', True)):
+            payload = self.sample_result()
+            payload['sample_stats'][key] = value
+            self.assertNotIn('可用样本统计', self.a._market_stats_text(self.fetch(payload)))
+
+    def test_sample_english_and_no_stale_reuse(self):
+        self.a._get_review_language = lambda: 'en'
+        obj = self.fetch(self.sample_result())
+        self.assertIn('not full-market statistics', self.a._market_stats_text(obj))
+        self.a.data_manager.get_market_stats.return_value = None
+        self.a._get_market_statistics(obj)
+        self.assertNotIn('5218/5225', self.a._market_stats_text(obj))
+
     def test_full_prompt_contains_missing_not_zero(self):
         self.a.profile.has_sector_rankings = False
         self.a._get_output_language = lambda: 'zh'

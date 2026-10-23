@@ -86,6 +86,8 @@ jobs:
       - name: 调用原模型分析候选（每日一批最多3只）
         if: success() && steps.ai_plan.outputs.analyze == 'true'
         env:
+          FUNDAMENTAL_STAGE_TIMEOUT_SECONDS: ${{ vars.FUNDAMENTAL_STAGE_TIMEOUT_SECONDS || '8.0' }}
+          FUNDAMENTAL_FETCH_TIMEOUT_SECONDS: ${{ vars.FUNDAMENTAL_FETCH_TIMEOUT_SECONDS || '8.0' }}
           GH_TOKEN: ${{ github.token }}
           RESERVATION_ID: ${{ steps.reserve_ai_budget.outputs.artifact-id }}
           AGENT_MODE: 'false'

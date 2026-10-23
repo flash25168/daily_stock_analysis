@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace, ModuleType
 from unittest.mock import Mock, patch
 
-import test_screening_pushplus as fixtures
+from tests import test_screening_pushplus as fixtures
 from scripts.screening_ai import analyze, native_analysis, prepare, select_codes, send_report
 
 
