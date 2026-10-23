@@ -24,6 +24,7 @@ AkshareFetcher - 主数据源 (Priority 1)
 """
 
 import logging
+import json
 import multiprocessing
 import os
 import random
@@ -2187,14 +2188,15 @@ class AkshareFetcher(BaseFetcher):
         获取行业板块涨跌榜
 
         数据源优先级：
-        1. 东财接口 (ak.stock_board_industry_name_em)
-        2. 新浪接口 (ak.stock_sector_spot)
+        1. 新浪行业 HTTPS（与 stock_sector_spot 相同字段，原SDK使用HTTP）
+        2. 东财接口 (ak.stock_board_industry_name_em)
         """
         import akshare as ak
 
         def _get_rank_top_n(df: pd.DataFrame, change_col: str, industry_name: str, n: int) -> Tuple[list, list]:
             df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
-            df = df.dropna(subset=[change_col])
+            df = df.loc[df[change_col].between(-100, 1000)].copy()
+            df = df.loc[df[industry_name].notna() & df[industry_name].astype(str).str.strip().ne('')]
 
             # 涨幅前n
             top = df.nlargest(n, change_col)
@@ -2210,7 +2212,29 @@ class AkshareFetcher(BaseFetcher):
             ]
             return top_sectors, bottom_sectors
         
-        # 优先东财接口
+        # The SDK's industry fallback still uses HTTP; request the same public
+        # endpoint over HTTPS with an actual transport timeout before Eastmoney.
+        try:
+            self._enforce_rate_limit()
+            response = requests.get(
+                'https://money.finance.sina.com.cn/q/view/newFLJK.php',
+                params={'param': 'industry'}, timeout=5.0,
+            )
+            response.raise_for_status()
+            text = response.content.decode('gb18030')
+            payload = json.loads(text[text.index('{'):])
+            if not isinstance(payload, dict):
+                raise ValueError('invalid sector response')
+            rows = [value.split(',') for value in payload.values() if isinstance(value, str)]
+            df = pd.DataFrame([{'板块': row[1], '涨跌幅': row[5]} for row in rows if len(row) == 13])
+            if not df.empty:
+                ranks = _get_rank_top_n(df, '涨跌幅', '板块', n)
+                if ranks[0] or ranks[1]:
+                    return ranks
+        except Exception as exc:
+            logger.warning('[Akshare] 新浪HTTPS板块取数失败: %s，尝试东财', type(exc).__name__)
+
+        # HTTPS行业来源不可用后，尝试东财。
         try:
             self._set_random_user_agent()
             self._enforce_rate_limit()
@@ -2223,24 +2247,9 @@ class AkshareFetcher(BaseFetcher):
                 return _get_rank_top_n(df, change_col, name, n)
             
         except Exception as e:
-            logger.warning(f"[Akshare] 东财接口获取行业板块排行失败: {e}，尝试新浪接口")
+            logger.warning(f"[Akshare] 东财接口获取行业板块排行失败: {type(e).__name__}")
 
-        # 东财失败后，尝试新浪接口
-        try:
-            self._set_random_user_agent()
-            self._enforce_rate_limit()
-
-            logger.info("[API调用] ak.stock_sector_spot() 获取行业板块排行(新浪)...")
-            df = ak.stock_sector_spot(indicator='行业')
-            if df is None or df.empty:
-                return None
-            change_col = '涨跌幅'
-            name = '板块'
-            return _get_rank_top_n(df, change_col, name, n)
-        
-        except Exception as e:
-            logger.error(f"[Akshare] 新浪接口获取板块排行也失败: {e}")
-            return None
+        return None
 
     def get_concept_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
         """获取概念/题材涨跌榜。"""

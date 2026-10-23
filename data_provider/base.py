@@ -4923,7 +4923,8 @@ class DataFetcherManager:
             source_chain: List[Dict[str, Any]] = []
             last_error = ""
             deadline = time.monotonic() + budget_seconds if budget_seconds is not None else None
-            fetchers = [f for f in self._get_fetchers_snapshot() if hasattr(f, 'get_sector_rankings')]
+            fetchers = [f for f in self._get_fetchers_snapshot() if hasattr(f, 'get_sector_rankings')
+                        and getattr(type(f), 'get_sector_rankings', None) is not BaseFetcher.get_sector_rankings]
 
             # 直接遍历管理器已经按 priority 排好序的数据源列表
             for index, fetcher in enumerate(fetchers):
@@ -4944,7 +4945,7 @@ class DataFetcherManager:
                         if error:
                             raise RuntimeError(error)
                     duration_ms = int((time.time() - start) * 1000)
-                    if data and data[0] is not None and data[1] is not None:
+                    if data and data[0] is not None and data[1] is not None and (data[0] or data[1]):
                         source_chain.append(
                             {
                                 "provider": fetcher.name,
