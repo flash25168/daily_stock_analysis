@@ -1,5 +1,7 @@
 """Offline regressions for partial disclosures and independently bounded fallbacks."""
 import time
+import json
+import sys
 import unittest
 from threading import BoundedSemaphore, Event, current_thread
 from types import SimpleNamespace
@@ -90,6 +92,31 @@ class FundamentalRecoveryTest(unittest.TestCase):
         adapter = AkshareFundamentalAdapter()
         with patch.object(adapter, '_call_df_candidates', return_value=(None, None, ['connection_failure'])):
             self.assertEqual(adapter.get_capital_flow('000858')['status'], 'failed')
+
+    def test_sina_https_sector_contract_and_invalid_percent_filter(self):
+        from data_provider.akshare_fetcher import AkshareFetcher
+        fetcher = object.__new__(AkshareFetcher)
+        payload = {str(i): ','.join(['label', name, '10', '1', '0', pct] + ['0'] * 7)
+                   for i, (name, pct) in enumerate([('行业甲', '2'), ('行业乙', '-1'), ('异常', 'inf')])}
+        response = SimpleNamespace(content=json.dumps(payload, ensure_ascii=False).encode('gb18030'),
+                                   raise_for_status=lambda: None)
+        with patch.dict(sys.modules, {'akshare': SimpleNamespace()}), \
+             patch.object(fetcher, '_enforce_rate_limit'), \
+             patch('data_provider.akshare_fetcher.requests.get', return_value=response) as request:
+            top, bottom = fetcher.get_sector_rankings(1)
+        self.assertEqual(top, [{'name': '行业甲', 'change_pct': 2}])
+        self.assertEqual(bottom, [{'name': '行业乙', 'change_pct': -1}])
+        self.assertEqual(request.call_args.args[0], 'https://money.finance.sina.com.cn/q/view/newFLJK.php')
+        self.assertEqual(request.call_args.kwargs, {'params': {'param': 'industry'}, 'timeout': 5.0})
+
+    def test_empty_board_source_continues_to_backup(self):
+        manager = self.manager()
+        ranks = ([{'name': 'test', 'change_pct': 1}], [])
+        manager._fetchers = [SimpleNamespace(name='empty', get_sector_rankings=lambda n: ([], [])),
+                            SimpleNamespace(name='backup', get_sector_rankings=lambda n: ranks)]
+        top, bottom, chain, _ = manager._get_sector_rankings_with_meta(budget_seconds=0.2)
+        self.assertEqual((top, bottom), ranks)
+        self.assertEqual(chain[-1]['provider'], 'backup')
 
 
 if __name__ == '__main__':
