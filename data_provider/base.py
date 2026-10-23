@@ -3528,6 +3528,59 @@ class DataFetcherManager:
 
         return None, last_error, total_cost_ms
 
+    def _get_cn_fundamental_bundle(self, stock_code: str, budget_seconds: float):
+        """Keep completed disclosure groups when a later endpoint hangs.
+
+        Reuse the existing bounded workers and per-operation quarantine. Each
+        group reserves time for subsequent groups; retries never consume the
+        entire bundle budget before another source can be tried.
+        """
+        start = time.monotonic()
+        deadline = start + max(0.0, budget_seconds)
+        weights = [4, 1, 1, 1, 2, 1]
+        trace = []
+
+        def candidates(items, *, stock_code=None):
+            weight = weights.pop(0) if weights else 1
+            remaining = max(0.0, deadline - time.monotonic())
+            group_deadline = time.monotonic() + remaining * weight / (weight + sum(weights))
+            errors = []
+            for index, (name, kwargs) in enumerate(items):
+                wait = max(0.0, group_deadline - time.monotonic()) / (len(items) - index)
+                if wait <= 0:
+                    errors.append(f'{name}: budget exhausted')
+                    break
+                value, error, cost = self._run_with_timeout(
+                    lambda n=name, k=kwargs: self._fundamental_adapter._call_df_candidates(
+                        [(n, k)], stock_code=stock_code),
+                    wait, name, quarantine_key=('akshare', name),
+                )
+                entry = {'provider': name, 'duration_ms': cost,
+                         'result': 'failed' if error else 'empty',
+                         **({'error': error} if error else {})}
+                trace.append(entry)
+                if error:
+                    errors.append(f'{name}: {error}')
+                    continue
+                if isinstance(value, tuple) and len(value) == 3:
+                    frame, source, provider_errors = value
+                    errors.extend(provider_errors)
+                    if provider_errors:
+                        entry['error'] = '; '.join(provider_errors)
+                        entry['result'] = 'failed'
+                    if isinstance(frame, pd.DataFrame) and not frame.empty:
+                        entry['result'] = 'ok'
+                        return frame, source, errors
+            return None, None, errors
+
+        try:
+            payload = self._fundamental_adapter.get_fundamental_bundle(stock_code, candidate_runner=candidates)
+        except Exception as exc:
+            return None, f'fundamental_bundle:{type(exc).__name__}', int((time.monotonic() - start) * 1000)
+        if isinstance(payload, dict):
+            payload['source_chain'] = list(payload.get('source_chain', [])) + trace
+        return payload, None, int((time.monotonic() - start) * 1000)
+
     def _get_fundamental_config(self):
         from src.config import get_config
         return get_config()
@@ -4413,12 +4466,8 @@ class DataFetcherManager:
             bundle_ms = 0
         else:
             bundle_timeout = min(fetch_timeout, remaining_seconds)
-            bundle_payload, bundle_err_msg, bundle_ms = self._run_with_retry(
-                lambda: self._fundamental_adapter.get_fundamental_bundle(stock_code),
-                bundle_timeout,
-                "fundamental_bundle",
-                quarantine_key=("akshare", "fundamental_bundle"),
-            )
+            bundle_payload, bundle_err_msg, bundle_ms = self._get_cn_fundamental_bundle(
+                stock_code, bundle_timeout)
             _consume_budget(bundle_ms)
             if not isinstance(bundle_payload, dict):
                 bundle_status = "failed"
@@ -4730,8 +4779,12 @@ class DataFetcherManager:
                 list(payload.get("errors", [])),
             )
         adapter_status = str(payload.get("status", "not_supported"))
-        if has_stock_flow or has_sector_rankings:
+        if has_stock_flow:
             capital_flow_status = "ok"
+        elif has_sector_rankings:
+            capital_flow_status = 'partial'
+        elif payload.get('errors') or adapter_status == 'failed':
+            capital_flow_status = 'failed'
         elif adapter_status == "not_supported":
             capital_flow_status = "not_supported"
         else:
@@ -4827,7 +4880,7 @@ class DataFetcherManager:
             )
 
         def task() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], str]:
-            return self._get_sector_rankings_with_meta(5)
+            return self._get_sector_rankings_with_meta(5, budget_seconds=max(0.0, timeout - 0.05))
 
         rankings, err, cost_ms = self._run_with_retry(task, timeout, "boards")
         if isinstance(rankings, tuple) and len(rankings) == 4:
@@ -4864,19 +4917,32 @@ class DataFetcherManager:
     def _get_sector_rankings_with_meta(
             self,
             n: int = 5,
+            budget_seconds: Optional[float] = None,
         ) -> Tuple[List[Dict], List[Dict], List[Dict[str, Any]], str]:
             """Get sector rankings with ordered fallback chain metadata."""
             source_chain: List[Dict[str, Any]] = []
             last_error = ""
+            deadline = time.monotonic() + budget_seconds if budget_seconds is not None else None
+            fetchers = [f for f in self._get_fetchers_snapshot() if hasattr(f, 'get_sector_rankings')]
 
             # 直接遍历管理器已经按 priority 排好序的数据源列表
-            for fetcher in self._fetchers:
+            for index, fetcher in enumerate(fetchers):
                 if not hasattr(fetcher, 'get_sector_rankings'):
                     continue
 
                 start = time.time()
                 try:
-                    data = fetcher.get_sector_rankings(n)
+                    if deadline is None:
+                        data = fetcher.get_sector_rankings(n)
+                    else:
+                        remaining = max(0.0, deadline - time.monotonic())
+                        wait = remaining / (len(fetchers) - index)
+                        data, error, _ = self._run_with_timeout(
+                            lambda f=fetcher: f.get_sector_rankings(n), wait, 'sector_rankings',
+                            quarantine_key=(fetcher.name, 'sector_rankings'),
+                        )
+                        if error:
+                            raise RuntimeError(error)
                     duration_ms = int((time.time() - start) * 1000)
                     if data and data[0] is not None and data[1] is not None:
                         source_chain.append(
