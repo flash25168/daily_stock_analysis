@@ -3546,7 +3546,10 @@ class DataFetcherManager:
             group_deadline = time.monotonic() + remaining * weight / (weight + sum(weights))
             errors = []
             for index, (name, kwargs) in enumerate(items):
-                wait = max(0.0, group_deadline - time.monotonic()) / (len(items) - index)
+                group_remaining = max(0.0, group_deadline - time.monotonic())
+                # A verified primary needs room for normal network latency;
+                # reserve 30% for fallback instead of cutting all three to 1.6s.
+                wait = group_remaining * 0.7 if index == 0 and len(items) > 1 else group_remaining / (len(items) - index)
                 if wait <= 0:
                     errors.append(f'{name}: budget exhausted')
                     break
