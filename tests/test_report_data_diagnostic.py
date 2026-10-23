@@ -21,6 +21,12 @@ class DiagnosticTests(unittest.TestCase):
     def test_missing_shell(self):
         self.assertEqual(module.summarize_block(None)['status'], 'missing')
 
+    def test_nested_financial_fields_visible_without_values(self):
+        result = module.summarize_block({'status': 'ok', 'data': {
+            'financial_report': {'revenue': 12345, 'report_date': '2026-06-30', 'missing': None}}})
+        self.assertEqual(result['populated_fields'], ['financial_report.report_date', 'financial_report.revenue'])
+        self.assertNotIn('12345', str(result))
+
     def test_error_categories_hide_original_strings(self):
         self.assertEqual(module.error_category('fundamental stage timeout'), 'stage_budget_exhausted')
         result = module.summarize_block({'errors': ['secret=xxx connection aborted'],

@@ -285,7 +285,7 @@ def test_top10_keeps_stock_scope_and_errors_without_unrelated_fallback(
     assert calls == [(expected, date) for date in _recent_report_dates()]
     assert result["institution"] == {}
     assert result["errors"] == ["stock_gdfx_top_10_em:KeyError"] * 2
-    assert result["status"] == "not_supported"
+    assert result["status"] == "failed"
 
 
 def test_installed_akshare_receives_valid_parameters_at_http_boundary(monkeypatch):
@@ -302,7 +302,7 @@ def test_installed_akshare_receives_valid_parameters_at_http_boundary(monkeypatc
 
     monkeypatch.setattr(requests, "get", stop_at_http)
     for name in (
-        "stock_financial_abstract", "stock_financial_analysis_indicator",
+        "stock_financial_abstract", "stock_financial_analysis_indicator", "stock_financial_analysis_indicator_em",
         "stock_fhps_detail_em", "stock_history_dividend_detail", "stock_dividend_cninfo",
     ):
         monkeypatch.setattr(ak, name, lambda **kwargs: pd.DataFrame(), raising=False)
