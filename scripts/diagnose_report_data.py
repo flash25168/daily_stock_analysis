@@ -65,6 +65,14 @@ def summarize_block(block):
     if isinstance(data, dict):
         keys = [k for k, v in data.items() if isinstance(k, str) and k.replace('_', '').isalnum()
                 and v is not None and not isinstance(v, (dict, list)) and str(v).strip() not in ('', '-', 'nan', 'None')]
+        # Report nested content too: financial_report/stock_flow were invisible
+        # even when the actual block was populated. Emit field names, not values.
+        for parent, value in data.items():
+            if isinstance(parent, str) and parent.replace('_', '').isalnum() and isinstance(value, dict):
+                keys.extend(f'{parent}.{key}' for key, item in value.items()
+                    if isinstance(key, str) and key.replace('_', '').isalnum()
+                    and item is not None and not isinstance(item, (dict, list))
+                    and str(item).strip() not in ('', '-', 'nan', 'None'))
     status = block.get('status')
     return {'status': status if status in ('ok', 'partial', 'failed', 'not_supported', 'timeout', 'success', 'empty', 'disabled') else 'unknown',
             'populated_fields': sorted(keys), 'error_count': len(block.get('errors') or []),
@@ -75,7 +83,7 @@ def summarize_block(block):
 
 def summarize_source(item):
     result = {}
-    for key in ('source', 'provider', 'status'):
+    for key in ('source', 'provider', 'status', 'result'):
         value = item.get(key)
         if isinstance(value, str) and value.replace('_', '').replace('-', '').isalnum() and len(value) <= 60:
             result[key] = value
