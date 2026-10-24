@@ -2245,6 +2245,7 @@ class NotificationService(
                 "concept_bottom": [],
                 "institution": {},
                 "institution_status": None,
+                "capital_flow": {},
             }
 
         earnings_block = ctx.get("earnings") if isinstance(ctx.get("earnings"), dict) else {}
@@ -2276,6 +2277,8 @@ class NotificationService(
         # and an empty data dict, so this block only renders for a Taiwan stock with data.
         institution_block = ctx.get("institution") if isinstance(ctx.get("institution"), dict) else {}
         institution_data = institution_block.get("data") if isinstance(institution_block.get("data"), dict) else {}
+        capital_block = ctx.get('capital_flow') if isinstance(ctx.get('capital_flow'), dict) else {}
+        capital_data = capital_block.get('data') if isinstance(capital_block.get('data'), dict) else {}
 
         return {
             "financial_report": financial_report,
@@ -2288,6 +2291,7 @@ class NotificationService(
             "concept_bottom": concept_bottom,
             "institution": institution_data,
             "institution_status": institution_block.get("status"),
+            "capital_flow": capital_data.get('stock_flow') or {},
         }
 
     def _append_fundamental_blocks(self, lines: List[str], result: AnalysisResult) -> None:
@@ -2304,7 +2308,33 @@ class NotificationService(
         self._append_financial_summary(lines, blocks, labels)
         self._append_shareholder_return(lines, blocks, labels)
         self._append_institutional_flow(lines, blocks, labels)
+        self._append_cn_ownership_and_flow(lines, blocks, report_language)
         self._append_related_boards(lines, blocks, labels)
+
+    def _append_cn_ownership_and_flow(self, lines, blocks, language):
+        """Render source data independently of AI prose, with explicit units/date."""
+        inst = blocks.get('institution') or {}
+        flow = blocks.get('capital_flow') or {}
+        english = language == 'en'
+        if any(inst.get(k) is not None for k in ('institution_count', 'holding_ratio_pct', 'institution_count_change')):
+            lines.extend([
+                '### Institutional holdings' if english else '### 🏦 机构持股（定期披露）', '',
+                f"- {'Report date' if english else '报告期'}: {self._format_text(inst.get('report_date'))}",
+                f"- {'Institution count' if english else '机构数量'}: {self._format_text(inst.get('institution_count'))}",
+                f"- {'Count change' if english else '机构数量变化（家）'}: {self._format_text(inst.get('institution_count_change'))}",
+                f"- {'Holding ratio' if english else '持股比例'}: {self._format_percent(inst.get('holding_ratio_pct'))}",
+                f"- {'Holding ratio growth (provider definition)' if english else '持股比例增幅（来源原口径）'}: {self._format_percent(inst.get('institution_holding_change'))}",
+                '> Periodic disclosure; not today’s institutional purchases. Top-ten aggregate change is unavailable without two comparable full lists.' if english else '> 定期披露数据，不代表当日机构买卖；没有可比的两期完整名单时，前十大股东合计变化保持未知。', '',
+            ])
+        if flow.get('main_net_inflow') is not None:
+            lines.extend([
+                '### Main capital flow' if english else '### 💰 个股主力资金流', '',
+                f"- {'Trade date' if english else '交易日期'}: {self._format_text(flow.get('trade_date'))}",
+                f"- {'Daily net inflow' if english else '当日主力净流入'}: {self._format_amount_cn(flow.get('main_net_inflow'), 'CNY')}",
+                f"- {'5-session net inflow' if english else '近5个交易日净流入'}: {self._format_amount_cn(flow.get('inflow_5d'), 'CNY')}",
+                f"- {'10-session net inflow' if english else '近10个交易日净流入'}: {self._format_amount_cn(flow.get('inflow_10d'), 'CNY')}",
+                '> Vendor-defined main orders; not verified institutional trades. N/A means unavailable, not zero.' if english else '> 主力为数据商的大单分类统计，不等于真实机构成交；N/A 表示数据缺失，不是零。', '',
+            ])
 
     def _append_financial_summary(
         self,

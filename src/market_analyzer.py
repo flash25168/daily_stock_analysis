@@ -1377,7 +1377,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         return reasons[:4]
 
     def _build_indices_block(self, overview: MarketOverview) -> str:
-        """构建指数行情表格"""
+        """构建适合手机阅读的指数行情文本块。"""
         if not overview.indices:
             return ""
         english = self._get_review_language() == 'en'
@@ -1385,7 +1385,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         for idx in overview.indices:
             lines.extend([
                 f"**{idx.name}**",
-                f"- {'Last / Change' if english else '最新 / 涨跌幅'}: {idx.current:.2f} / {idx.change_pct:+.2f}%",
+                f"- {'Last / Change' if english else '最新 / 涨跌幅'}: {idx.current:.2f} / {self._get_index_change_arrow(idx.change_pct)} {idx.change_pct:+.2f}%",
                 f"- {'Open / High / Low' if english else '开盘 / 最高 / 最低'}: {self._format_optional_number(idx.open)} / {self._format_optional_number(idx.high)} / {self._format_optional_number(idx.low)}",
                 f"- {'Amplitude' if english else '振幅'}: {self._format_optional_pct(idx.amplitude)}",
                 f"- {'Turnover' if english else '成交额'} ({self._get_turnover_unit_label()}): {self._format_turnover_value(idx.amount or 0.0)}",
