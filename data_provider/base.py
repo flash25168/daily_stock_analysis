@@ -3537,7 +3537,7 @@ class DataFetcherManager:
         """
         start = time.monotonic()
         deadline = start + max(0.0, budget_seconds)
-        weights = [4, 1, 1, 1, 2, 1]
+        weights = [4, 2, 1, 1, 1, 2, 1]
         trace = []
 
         def candidates(items, *, stock_code=None):
