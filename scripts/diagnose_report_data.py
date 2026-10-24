@@ -68,6 +68,8 @@ def summarize_block(block):
         # Report nested content too: financial_report/stock_flow were invisible
         # even when the actual block was populated. Emit field names, not values.
         for parent, value in data.items():
+            if isinstance(parent, str) and parent.replace('_', '').isalnum() and isinstance(value, list) and value:
+                keys.append(parent)
             if isinstance(parent, str) and parent.replace('_', '').isalnum() and isinstance(value, dict):
                 keys.extend(f'{parent}.{key}' for key, item in value.items()
                     if isinstance(key, str) and key.replace('_', '').isalnum()
