@@ -51,14 +51,16 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
     if isinstance(value, (int, float)):
         try:
-            return float(value)
+            result = float(value)
+            return result if math.isfinite(result) else None
         except (TypeError, ValueError):
             return None
     s = str(value).strip().replace(",", "").replace("%", "")
     if not s:
         return None
     try:
-        return float(s)
+        result = float(s)
+        return result if math.isfinite(result) else None
     except (TypeError, ValueError):
         return None
 
@@ -369,7 +371,7 @@ class AkshareFundamentalAdapter:
                 continue
         return None, None, errors
 
-    def get_fundamental_bundle(self, stock_code: str) -> Dict[str, Any]:
+    def get_fundamental_bundle(self, stock_code: str, *, candidate_runner=None) -> Dict[str, Any]:
         """
         Return normalized fundamental blocks from AkShare with partial tolerance.
         """
@@ -389,15 +391,41 @@ class AkshareFundamentalAdapter:
         shareholder_symbol = _to_sina_tx_symbol(stock_code)
         stock_code = _normalize_code(stock_code)
         report_dates = _recent_report_dates()
+        call_candidates = candidate_runner or self._call_df_candidates
 
         # Financial indicators
-        fin_df, fin_source, fin_errors = self._call_df_candidates([
+        fin_df, fin_source, fin_errors = call_candidates([
+            ("stock_financial_analysis_indicator_em", {
+                "symbol": f"{stock_code}.{shareholder_symbol[:2].upper()}",
+                "indicator": "按报告期",
+            }),
             ("stock_financial_abstract", {"symbol": stock_code}),
-            ("stock_financial_analysis_indicator", {"symbol": stock_code}),
-            ("stock_financial_analysis_indicator", {}),
+            ("stock_financial_analysis_indicator", {"symbol": stock_code,
+                "start_year": str(datetime.now().year - 1)}),
         ])
         result["errors"].extend(fin_errors)
         if fin_df is not None:
+            if fin_source == "stock_financial_analysis_indicator_em":
+                # This endpoint uses English field names and yuan units.
+                # Validate identity/period before translating into the existing contract.
+                if not {'SECUCODE', 'REPORT_DATE'}.issubset(fin_df.columns):
+                    fin_df = pd.DataFrame()
+                    result['errors'].append('stock_financial_analysis_indicator_em:invalid identity or report date')
+                else:
+                    dates = pd.to_datetime(fin_df['REPORT_DATE'], errors='coerce', utc=True)
+                    matched = fin_df['SECUCODE'].astype(str).map(_normalize_code).eq(stock_code)
+                    valid = matched & dates.notna() & dates.le(pd.Timestamp.now(tz='UTC'))
+                    if 'NOTICE_DATE' in fin_df:
+                        notices = pd.to_datetime(fin_df['NOTICE_DATE'], errors='coerce', utc=True)
+                        valid &= notices.notna() & notices.le(pd.Timestamp.now(tz='UTC'))
+                    fin_df = fin_df.loc[valid].copy()
+                    fin_df['_report_sort'] = dates.loc[valid]
+                    fin_df = fin_df.sort_values('_report_sort', ascending=False).rename(columns={
+                        'REPORT_DATE': '报告期', 'TOTALOPERATEREVETZ': '营业收入同比',
+                        'PARENTNETPROFITTZ': '净利润同比', 'ROEJQ': '净资产收益率',
+                        'XSMLL': '毛利率', 'TOTALOPERATEREVE': '营业总收入',
+                        'PARENTNETPROFIT': '归母净利润', 'NETCASH_OPERATE': '经营活动产生的现金流量净额',
+                    })
             row = _financial_abstract_row(fin_df) if "指标" in fin_df else _extract_latest_row(fin_df, stock_code)
             if row is not None:
                 revenue_yoy = _safe_float(_pick_by_keywords(row, ["营业收入同比", "营收同比", "收入同比", "同比增长"]))
@@ -405,7 +433,7 @@ class AkshareFundamentalAdapter:
                 roe = _safe_float(_pick_by_keywords(row, ["净资产收益率", "ROE", "净资产收益"]))
                 gross_margin = _safe_float(_pick_by_keywords(row, ["毛利率"]))
                 report_date = _normalize_report_date(_pick_by_keywords(row, _DIVIDEND_KEYWORD_MAP["report_date"]))
-                is_wide = "指标" in fin_df
+                is_wide = "指标" in fin_df or fin_source == 'stock_financial_analysis_indicator_em'
                 revenue = _safe_float(
                     row.get("营业总收入") if is_wide else _pick_by_keywords(row, ["营业总收入", "营业收入", "营收"])
                 )
@@ -436,7 +464,7 @@ class AkshareFundamentalAdapter:
                     result["source_chain"].append(f"growth:{fin_source}")
 
         # Earnings forecast
-        forecast_df, forecast_source, forecast_errors = self._call_df_candidates([
+        forecast_df, forecast_source, forecast_errors = call_candidates([
             ("stock_yjyg_em", {"date": report_date})
             for report_date in report_dates
         ], stock_code=stock_code)
@@ -450,7 +478,7 @@ class AkshareFundamentalAdapter:
                     result["source_chain"].append(f"earnings_forecast:{forecast_source}")
 
         # Earnings quick report
-        quick_df, quick_source, quick_errors = self._call_df_candidates([
+        quick_df, quick_source, quick_errors = call_candidates([
             ("stock_yjkb_em", {"date": report_date})
             for report_date in report_dates
         ], stock_code=stock_code)
@@ -464,7 +492,7 @@ class AkshareFundamentalAdapter:
                     result["source_chain"].append(f"earnings_quick:{quick_source}")
 
         # Dividend details (cash dividend, pre-tax)
-        dividend_df, dividend_source, dividend_errors = self._call_df_candidates([
+        dividend_df, dividend_source, dividend_errors = call_candidates([
             ("stock_fhps_detail_em", {"symbol": stock_code}),
             ("stock_history_dividend_detail", {"symbol": stock_code, "indicator": "分红", "date": ""}),
             ("stock_dividend_cninfo", {"symbol": stock_code}),
@@ -477,7 +505,7 @@ class AkshareFundamentalAdapter:
                 result["source_chain"].append(f"dividend:{dividend_source}")
 
         # Institution / top shareholders
-        inst_df, inst_source, inst_errors = self._call_df_candidates([
+        inst_df, inst_source, inst_errors = call_candidates([
             ("stock_institute_hold", {
                 "symbol": f"{report_date[:4]}{int(report_date[4:6]) // 3}",
             })
@@ -491,7 +519,7 @@ class AkshareFundamentalAdapter:
                 result["institution"]["institution_holding_change"] = inst_change
                 result["source_chain"].append(f"institution:{inst_source}")
 
-        top10_df, top10_source, top10_errors = self._call_df_candidates([
+        top10_df, top10_source, top10_errors = call_candidates([
             ("stock_gdfx_top_10_em", {"symbol": shareholder_symbol, "date": report_date})
             for report_date in report_dates
         ])
@@ -504,7 +532,7 @@ class AkshareFundamentalAdapter:
                 result["source_chain"].append(f"top10:{top10_source}")
 
         has_content = bool(result["growth"] or result["earnings"] or result["institution"])
-        result["status"] = "partial" if has_content else "not_supported"
+        result["status"] = "partial" if has_content else ("failed" if result["errors"] else "not_supported")
         return result
 
     def get_capital_flow(self, stock_code: str, top_n: int = 5) -> Dict[str, Any]:
@@ -560,7 +588,7 @@ class AkshareFundamentalAdapter:
                 result["source_chain"].append(f"capital_sector:{sector_source}")
 
         has_content = bool(result["stock_flow"] or result["sector_rankings"]["top"] or result["sector_rankings"]["bottom"])
-        result["status"] = "partial" if has_content else "not_supported"
+        result["status"] = "partial" if has_content else ("failed" if result["errors"] else "not_supported")
         return result
 
     def get_dragon_tiger_flag(self, stock_code: str, lookback_days: int = 20) -> Dict[str, Any]:
