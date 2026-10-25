@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 from scripts.screen_candidates import market_clock, write_outputs
 from scripts.send_screening_candidates import notification_gate
+from scripts.screening_scope import SCOPE_NOTICE, is_mainboard, validate_payload
 
 MAX_STOCKS = 3
 
@@ -44,6 +45,7 @@ def api_json(path: str, *, params=None):
 
 
 def select_codes(payload: dict) -> list[str]:
+    validate_payload(payload)
     allowed = {row["code"] for strategy in payload["strategies"] for row in strategy["picks"]}
     codes = []
     for row in payload.get("candidates", []):
@@ -96,6 +98,8 @@ def prepare(result_path: Path, *, scheduled=False, api=api_json) -> dict:
 
 
 def native_analysis(codes: list[str]) -> tuple[list[str], str]:
+    if not codes or len(codes) > MAX_STOCKS or not all(is_mainboard(code) for code in codes):
+        raise ValueError('Invalid mainboard analysis scope')
     # Import after the budget reservation is verified. No model is initialized
     # during planning, offline tests or a no-candidate run.
     yaml_text = os.environ.get("LITELLM_CONFIG_YAML", "")
@@ -166,7 +170,7 @@ def analyze(result_path: Path, reservation_id: str, *, api=api_json, runner=nati
         if report.strip():
             heading = (f"# 筛选候选 AI 分析 — {plan['trade_date']}\n\n"
                        f"本次选择 {len(codes)} 只，完成 {len(state['completed_codes'])} 只。"
-                       "候选来源为有界技术筛选，分析仅供参考。\n\n")
+                       f"候选来源为有界技术筛选，分析仅供参考。\n\n{SCOPE_NOTICE}\n\n")
             (folder / "ai_report.md").write_text(heading + report, encoding="utf-8")
     except Exception as exc:
         state["status"], state["error_type"] = "failed", type(exc).__name__
@@ -185,6 +189,11 @@ def send_report(result_path: Path, *, sender_factory=None) -> int:
     plan = json.loads((folder / "ai_plan.json").read_text(encoding="utf-8"))
     if state["status"] != "success" or notification_gate(payload, market_clock(), scheduled=plan["scheduled"]) != "send":
         print("AI 报告未完整完成或日期已过期，不发送。")
+        return 1
+    codes = select_codes(payload)
+    if (state.get('selected_codes') != codes or set(state.get('completed_codes', [])) != set(codes)
+            or plan.get('codes') != codes):
+        print('AI报告与当前主板候选不一致，不发送。')
         return 1
     if state["notification"]["status"] in {"submitting", "accepted", "failed_or_unknown"}:
         print("已有 AI 报告推送记录，不自动重发。")

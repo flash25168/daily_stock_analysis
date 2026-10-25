@@ -20,6 +20,10 @@ from uuid import uuid4
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from scripts.screening_scope import (
+    SCOPE_NOTICE, filter_snapshot, policy_descriptor, rejection_reason,
+)
+
 STRATEGIES = {"volume_breakout": "放量突破", "shrink_pullback": "缩量回踩"}
 FIELDS = ("rank", "code", "name", "price", "change_pct", "final_score", "screen_score",
           "daily_source", "daily_quality_flags", "breakout_20d_pct",
@@ -220,6 +224,12 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
         print(f"开始：{label}；日线核验上限 {daily_limit}", flush=True)
         histories = {}
         history_lock = threading.Lock()
+        universe_audit = {}
+
+        def scoped_snapshot(frame):
+            scoped = filter_snapshot(frame)
+            universe_audit.update(scoped.attrs['universe_audit'])
+            return scoped
 
         def audited_history_fetcher(code, **kwargs):
             from src.services.screening.daily import fetch_daily_history
@@ -243,6 +253,7 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
                 daily_enrich=True, daily_enrich_max_candidates=daily_limit,
                 explain_filters=True, context=None, config=config,
                 daily_history_fetcher=audited_history_fetcher,
+                snapshot_filter=scoped_snapshot,
             )
             if result.llm_ranked or result.llm_attempted_models or result.deep_analysis_requested:
                 raise RuntimeError("Unexpected model execution")
@@ -254,6 +265,7 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
             clock = market_clock()
             snapshot = snapshot_dates(config.fallback_snapshot_path)
             accepted, rejected, date_rejected = [], 0, []
+            scope_rejected = []
             audits = {code: audit_pick_dates(code, evidence, snapshot, clock)
                       for code, evidence in histories.items()}
             for pick in result.picks:
@@ -269,7 +281,12 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
                 )):
                     rejected += 1
                     continue
-                accepted.append({**pick_row(pick), **audit})
+                row = pick_row(pick)
+                reason = rejection_reason(row.get('code'), row.get('name'), row.get('price'))
+                if reason:
+                    scope_rejected.append({'code': code, 'reason': reason})
+                    continue
+                accepted.append({**row, **audit})
             statuses = [row["date_audit_status"] for row in audits.values()]
             statuses.extend(row["date_audit_status"] for row in accepted if row["code"] not in audits)
             session_changed = run_clock["expected_daily_date"] != clock["expected_daily_date"]
@@ -285,6 +302,8 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
                 "after_filter_count": result.after_filter_count,
                 "daily_success_count": result.daily_enrich_count,
                 "daily_limit": daily_limit,
+                "universe_audit": universe_audit,
+                "scope_rejected_from_top5": scope_rejected,
                 "quality_rejected_from_top5": rejected,
                 "date_audit_status": audit_status,
                 "date_audit_counts": dict(Counter(statuses)),
@@ -314,7 +333,7 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
             row = picks[rank]
             code = str(row["code"])
             if code not in candidates:
-                candidates[code] = {"code": code, "name": row["name"], "signals": []}
+                candidates[code] = {"code": code, "name": row["name"], "price": row['price'], "signals": []}
             candidates[code]["signals"].append({"strategy": result["strategy"],
                                                 "rank": row["rank"], "score": row["final_score"],
                                                 "daily_trade_date": row.get("daily_trade_date"),
@@ -324,6 +343,7 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
         "mode": "factor_only_test", "llm_enabled": False, "notifications_enabled": False,
         "created_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
         "date_audit_version": 3,
+        "universe_policy": policy_descriptor(),
         "market_clock": run_clock,
         "ready_for_automation": bool(results) and all(
             row["status"] == "ok" and row["date_audit_status"] == "pass" for row in results),
@@ -357,6 +377,7 @@ def write_outputs(output_dir: Path, payload: dict) -> None:
                                  signal["snapshot_trade_date"], signal["date_audit_status"]])
     notification = payload.get("notification", {})
     lines = ["# A股自动选股（因子筛选）", "", f"生成时间（北京时间）：{payload['created_at']}", "",
+             SCOPE_NOTICE, "",
              "选股阶段仅执行本地因子筛选，不调用模型或搜索新闻；后续 AI 分析状态另列。",
              f"通知状态：{notification.get('status', 'not_requested')}；"
              f"{notification.get('message', '本次未请求发送通知。')}", "",

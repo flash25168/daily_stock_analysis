@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.screen_candidates import STRATEGIES, market_clock, safe_text, schedule_gate, write_outputs
+from scripts.screening_scope import SCOPE_NOTICE, validate_payload
 
 
 def notification_gate(payload: dict, clock: dict, *, scheduled: bool) -> str:
@@ -50,6 +51,10 @@ def notification_gate(payload: dict, clock: dict, *, scheduled: bool) -> str:
                 return "blocked_date_evidence"
     if len(payload.get("candidates", [])) > 10:
         return "blocked_size"
+    try:
+        validate_payload(payload)
+    except (ValueError, TypeError, KeyError):
+        return 'blocked_universe_policy'
     return "send"
 
 
@@ -57,6 +62,7 @@ def message_body(payload: dict) -> tuple[str, str]:
     day = payload["market_clock"]["expected_daily_date"]
     title = f"A股选股候选（非AI）{day}"
     lines = [f"# {title}", "", "仅技术因子筛选，未调用 AI、未核验新闻与公告。",
+             SCOPE_NOTICE,
              f"交易日期：{day}；来源声明的快照日期与日线日期核验通过。",
              f"每策略日线核验上限：{payload['daily_limit_per_strategy']}，非逐股全市场扫描。",
              "分数仅用于同一策略、同次候选池内比较，不表示胜率。", ""]
