@@ -22,8 +22,73 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: 离线诊断输出测试
         run: python -m unittest discover -s tests -p test_report_data_diagnostic.py -v
+      # Read-only access probe reuses the production Tushare client. No AI/notification secrets.
+      - name: Tushare 官方接口权限检查
+        env:
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          TUSHARE_HTTP_URL: https://api.tushare.pro
+        run: |
+          python - <<'PY'
+          import json, logging, os, time
+          from datetime import datetime, timedelta
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+          logging.disable(logging.CRITICAL)
+          from data_provider.tushare_fetcher import TushareFetcher
+          out = {"model_called": False, "notification_sent": False, "token_configured": bool(os.getenv("TUSHARE_TOKEN")), "interfaces": {}}
+          fetcher = TushareFetcher()
+          now = datetime.now(ZoneInfo("Asia/Shanghai"))
+          def probe(name, **params):
+              try:
+                  frame = fetcher._call_api_with_rate_limit(name, **params)
+                  item = {"status": "ok" if len(frame) else "empty", "rows": len(frame)}
+                  for key in ("trade_date", "end_date", "ann_date"):
+                      if key in frame and len(frame):
+                          item["latest_" + key] = str(frame[key].max())
+                  out["interfaces"][name] = item
+                  return frame
+              except Exception as exc:
+                  text = str(exc).lower()
+                  category = "other_failure"
+                  for label, words in (("rate_limited", ("每分钟", "每天", "频次", "限流", "429")), ("permission_denied", ("权限", "没有访问", "permission", "forbidden")), ("invalid_token", ("token", "令牌")), ("network_failure", ("connection", "timeout", "timed out", "proxy", "http"))):
+                      if any(word in text for word in words):
+                          category = label
+                          break
+                  out["interfaces"][name] = {"status": category}
+                  return None
+              finally:
+                  time.sleep(15)
+          cal = probe("trade_cal", exchange="SSE", start_date=(now-timedelta(days=30)).strftime("%Y%m%d"), end_date=now.strftime("%Y%m%d"))
+          if cal is not None and not cal.empty:
+              opened = cal.loc[cal.is_open.eq(1), "cal_date"]
+              latest = str(opened.max()) if len(opened) else None
+          else:
+              latest = None
+          out["latest_open_date"] = latest
+          if latest:
+              probe("daily", trade_date=latest)
+              probe("index_daily", ts_code="000001.SH", trade_date=latest)
+              probe("daily_basic", ts_code="600519.SH", trade_date=latest)
+              probe("income", ts_code="600519.SH", start_date=(now-timedelta(days=365)).strftime("%Y%m%d"), end_date=now.strftime("%Y%m%d"))
+              probe("cashflow", ts_code="600519.SH", start_date=(now-timedelta(days=365)).strftime("%Y%m%d"), end_date=now.strftime("%Y%m%d"))
+              probe("fina_indicator", ts_code="600519.SH", start_date=(now-timedelta(days=365)).strftime("%Y%m%d"), end_date=now.strftime("%Y%m%d"))
+              probe("moneyflow", ts_code="600519.SH", trade_date=latest)
+          else:
+              out["remaining_checks"] = "skipped_without_verified_trade_calendar"
+          target = Path("reports/data_diagnostics")
+          target.mkdir(parents=True, exist_ok=True)
+          text = json.dumps(out, ensure_ascii=False, indent=2)
+          (target / "tushare_access.json").write_text(text, encoding="utf-8")
+          summary = "# Tushare 接口权限检查（无AI、无通知）\n\n官方接口返回验证；仅输出状态、记录数和日期，不输出 Token 或原始异常。\n\n```json\n" + text + "\n```\n"
+          (target / "tushare_access.md").write_text(summary, encoding="utf-8")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+              handle.write(summary)
+          print(text)
+          PY
       - name: 只检查数据（无模型和通知密钥）
         env:
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          TUSHARE_HTTP_URL: https://api.tushare.pro
           FUNDAMENTAL_STAGE_TIMEOUT_SECONDS: ${{ vars.FUNDAMENTAL_STAGE_TIMEOUT_SECONDS || '8.0' }}
           FUNDAMENTAL_FETCH_TIMEOUT_SECONDS: ${{ vars.FUNDAMENTAL_FETCH_TIMEOUT_SECONDS || '8.0' }}
           PYTHONUNBUFFERED: '1'
