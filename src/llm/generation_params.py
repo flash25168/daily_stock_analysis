@@ -189,6 +189,7 @@ def _should_omit_litellm_temperature(model: str) -> bool:
     """Return whether a model family should rely on the provider default temperature."""
     return any(
         part.startswith(("gpt-5", "gpt5"))
+        or re.fullmatch(r"gpt-?6(?:[.\-].*)?", part) is not None
         or part in {"o1", "o3", "o4"}
         or part.startswith(("o1-", "o3-", "o4-"))
         for part in _model_parts(model)

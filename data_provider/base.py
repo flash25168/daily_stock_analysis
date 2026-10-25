@@ -3537,7 +3537,9 @@ class DataFetcherManager:
         """
         start = time.monotonic()
         deadline = start + max(0.0, budget_seconds)
-        weights = [4, 1, 1, 1, 2, 1]
+        # Finance/cash/holdings precede optional forecasts and dividends. Keep
+        # room for observed 4-5s holdings latency without extending the bundle.
+        weights = [12, 4, 8, 2, 1, 1, 1]
         trace = []
 
         def candidates(items, *, stock_code=None):
@@ -4553,6 +4555,12 @@ class DataFetcherManager:
         growth_status = self._infer_block_status(growth_payload, bundle_status)
         earnings_status = self._infer_block_status(earnings_payload, bundle_status)
         institution_status = self._infer_block_status(institution_payload, bundle_status)
+        if institution_payload and all(institution_payload.get(key) is None for key in (
+            'institution_holding_change', 'institution_count', 'institution_count_change',
+            'holding_ratio_pct', 'top10_holder_change',
+        )):
+            # A top-ten list count/note alone does not establish holding changes.
+            institution_status = 'partial'
 
         result_ctx["growth"] = self._build_fundamental_block(
             growth_status,

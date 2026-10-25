@@ -340,6 +340,117 @@ def _financial_abstract_row(df: pd.DataFrame) -> Optional[pd.Series]:
 class AkshareFundamentalAdapter:
     """AkShare adapter for fundamentals, capital flow and dragon-tiger signals."""
 
+    def _cashflow_statement_em(self, stock_code: str, report_date: str) -> pd.DataFrame:
+        """Fetch only the requested issuer/period, amounts in CNY (not per share)."""
+        import requests
+
+        response = requests.get('https://datacenter-web.eastmoney.com/api/data/v1/get',
+            params={'reportName': 'RPT_DMSK_FN_CASHFLOW', 'columns': 'ALL',
+                'filter': f'(SECURITY_CODE="{stock_code}")(REPORT_DATE=\'{report_date}\')',
+                'pageNumber': 1, 'pageSize': 2, 'sortColumns': 'REPORT_DATE', 'sortTypes': -1},
+            timeout=5)
+        response.raise_for_status()
+        rows = (response.json().get('result') or {}).get('data') or []
+        frame = pd.DataFrame(rows)
+        required = {'SECURITY_CODE', 'REPORT_DATE', 'NOTICE_DATE', 'NETCASH_OPERATE'}
+        if not required.issubset(frame.columns):
+            raise ValueError('cashflow: missing disclosure fields')
+        periods = pd.to_datetime(frame.REPORT_DATE, errors='coerce', utc=True)
+        notices = pd.to_datetime(frame.NOTICE_DATE, errors='coerce', utc=True)
+        valid = (frame.SECURITY_CODE.astype(str).eq(stock_code)
+            & periods.dt.strftime('%Y-%m-%d').eq(report_date)
+            & periods.le(pd.Timestamp.now(tz='UTC')) & notices.le(pd.Timestamp.now(tz='UTC')))
+        frame = frame.loc[valid].copy()
+        if frame.empty:
+            raise ValueError('cashflow: wrong issuer, period or future disclosure')
+        return frame
+
+    def _capital_history_em(self, stock: str, market: str) -> pd.DataFrame:
+        """Bounded version of AkShare's Eastmoney history request (10 sessions)."""
+        import json
+        import time
+        from urllib.error import HTTPError, URLError
+        from urllib.parse import urlencode
+        from urllib.request import Request, urlopen
+
+        params = {'lmt': 10, 'klt': 101, 'secid': f'{1 if market == "sh" else 0}.{stock}',
+                'fields1': 'f1,f2,f3,f7',
+                'fields2': 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65',
+                'ut': 'b2884a393a59ad64002292a3e90d46a5'}
+        request = Request('https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?' + urlencode(params),
+            headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://data.eastmoney.com/'})
+        deadline = time.monotonic() + 5
+        for attempt in range(2):
+            try:
+                with urlopen(request, timeout=max(0.1, deadline - time.monotonic())) as response:
+                    payload = json.load(response)
+                break
+            except (URLError, TimeoutError, ConnectionError) as exc:
+                if (attempt or time.monotonic() >= deadline
+                        or isinstance(exc, HTTPError) and exc.code < 500):
+                    raise
+                # One bounded transport retry for intermittent disconnects;
+                # schema/JSON/permission failures do not trigger this retry.
+                time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+        data = payload.get('data') or {}
+        if payload.get('rc') != 0 or str(data.get('code')) != stock:
+            raise ValueError('capital history: invalid response identity')
+        records = []
+        for line in data.get('klines') or []:
+            fields = line.split(',')
+            if len(fields) != 15:
+                raise ValueError('capital history: invalid row shape')
+            records.append({'日期': fields[0], '主力净流入-净额': fields[1]})
+        frame = pd.DataFrame(records)
+        frame.attrs['transport_retries'] = attempt
+        return frame
+
+    def _capital_snapshot_em(self, stock: str, market: str) -> pd.DataFrame:
+        """Closed-session fallback using the same vendor's verified flow fields.
+
+        f62/f164/f174 are CNY net amounts (day/5/10 sessions), not ratios.
+        f124 is the quote update timestamp, so accept it only after the close
+        on the calendar's expected session. A fresh fetch is not a fresh quote.
+        """
+        import json
+        from datetime import timezone
+        from urllib.parse import urlencode
+        from urllib.request import Request, urlopen
+        from src.core.trading_calendar import build_market_phase_context
+
+        if market not in ('sh', 'sz'):
+            return pd.DataFrame()
+        clock = build_market_phase_context(market='cn')
+        if clock.phase.value not in ('postmarket', 'premarket', 'non_trading') or any(
+            warning in clock.warnings for warning in ('calendar_error', 'calendar_unavailable')
+        ):
+            raise ValueError('capital snapshot: reliable closed-session calendar required')
+        market_id = 1 if market == 'sh' else 0
+        params = {'secids': f'{market_id}.{stock}', 'fields': 'f12,f13,f62,f124,f164,f174',
+                  'fltt': 2, 'invt': 2}
+        request = Request('https://push2.eastmoney.com/api/qt/ulist.np/get?' + urlencode(params),
+            headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://data.eastmoney.com/'})
+        with urlopen(request, timeout=3) as response:
+            payload = json.load(response)
+        rows = (payload.get('data') or {}).get('diff') or []
+        if payload.get('rc') != 0 or not isinstance(rows, list) or len(rows) != 1:
+            raise ValueError('capital snapshot: invalid response shape')
+        row = rows[0]
+        if str(row.get('f12')) != stock or row.get('f13') != market_id:
+            raise ValueError('capital snapshot: wrong security')
+        timestamp = _safe_float(row.get('f124'))
+        amount = _safe_float(row.get('f62'))
+        if timestamp is None or amount is None or isinstance(row.get('f62'), bool):
+            raise ValueError('capital snapshot: invalid timestamp or net amount')
+        updated = datetime.fromtimestamp(timestamp, timezone(timedelta(hours=8)))
+        if (updated.date() != clock.effective_daily_bar_date or updated.hour < 15
+                or updated > datetime.now(updated.tzinfo)):
+            raise ValueError('capital snapshot: stale, future or unclosed quote')
+        frame = pd.DataFrame([{'日期': updated.date().isoformat(), '主力净流入-净额': amount}])
+        frame.attrs.update({'inflow_5d': _safe_float(row.get('f164')),
+            'inflow_10d': _safe_float(row.get('f174')), 'window_source': 'provider_snapshot'})
+        return frame
+
     def _call_df_candidates(
         self,
         candidates: List[Tuple[str, Dict[str, Any]]],
@@ -347,16 +458,15 @@ class AkshareFundamentalAdapter:
         stock_code: Optional[str] = None,
     ) -> Tuple[Optional[pd.DataFrame], Optional[str], List[str]]:
         errors: List[str] = []
-        try:
-            import akshare as ak
-        except Exception as exc:
-            return None, None, [f"import_akshare:{type(exc).__name__}"]
-
         for func_name, kwargs in candidates:
-            fn = getattr(ak, func_name, None)
-            if fn is None:
-                continue
             try:
+                if func_name in ('_cashflow_statement_em', '_capital_history_em', '_capital_snapshot_em'):
+                    fn = getattr(self, func_name)
+                else:
+                    import akshare as ak
+                    fn = getattr(ak, func_name, None)
+                if fn is None:
+                    continue
                 df = fn(**kwargs)
                 if isinstance(df, pd.Series):
                     df = df.to_frame().T
@@ -365,6 +475,12 @@ class AkshareFundamentalAdapter:
                     # A nonempty table for other stocks must not stop fallback.
                     df = _filter_rows_by_code(df, stock_code, require_code=True)
                 if isinstance(df, pd.DataFrame) and not df.empty:
+                    if func_name == 'stock_institute_hold':
+                        quarter = str(kwargs.get('symbol', ''))
+                        if re.fullmatch(r'\d{4}[1-4]', quarter):
+                            df.attrs['report_date'] = quarter[:4] + ('-03-31', '-06-30', '-09-30', '-12-31')[int(quarter[-1]) - 1]
+                    elif func_name == 'stock_gdfx_top_10_em':
+                        df.attrs['report_date'] = _normalize_report_date(kwargs.get('date'))
                     return df, func_name, errors
             except Exception as exc:
                 errors.append(f"{func_name}:{type(exc).__name__}")
@@ -463,6 +579,64 @@ class AkshareFundamentalAdapter:
                 if result["growth"] or result["earnings"].get("financial_report"):
                     result["source_chain"].append(f"growth:{fin_source}")
 
+        # The indicator endpoint omits cash flow totals. Supplement the exact
+        # same disclosed period; never substitute cash flow per share or TTM.
+        financial = result['earnings'].get('financial_report', {})
+        cash_candidates = []
+        if financial.get('report_date') and financial.get('operating_cash_flow') is None:
+            cash_candidates = [('_cashflow_statement_em', {
+                'stock_code': stock_code, 'report_date': financial['report_date']})]
+        cash_df, cash_source, cash_errors = call_candidates(cash_candidates)
+        result['errors'].extend(cash_errors)
+        if cash_df is not None and not cash_df.empty:
+            cash = _safe_float(cash_df.iloc[0].get('NETCASH_OPERATE'))
+            if cash is not None:
+                financial['operating_cash_flow'] = cash
+                result['source_chain'].append(f'cashflow:{cash_source}')
+
+        # Prioritize holdings before optional forecasts/dividends. Once the
+        # issuer's statement period is known, do not spend the budget querying
+        # an undisclosed quarter first or silently mix reporting periods.
+        institution_dates = ([financial['report_date'].replace('-', '')]
+            if financial.get('report_date') else report_dates)
+        # Institution / top shareholders
+        inst_df, inst_source, inst_errors = call_candidates([
+            ("stock_institute_hold", {
+                "symbol": f"{report_date[:4]}{int(report_date[4:6]) // 3}",
+            })
+            for report_date in institution_dates
+        ], stock_code=stock_code)
+        result["errors"].extend(inst_errors)
+        if inst_df is not None:
+            row = _extract_latest_row(inst_df, stock_code)
+            if row is not None:
+                # Institution count changes are not holding-ratio changes.
+                inst_change = _safe_float(row.get('持股比例增幅'))
+                result["institution"].update({
+                    "report_date": inst_df.attrs.get('report_date'),
+                    "institution_holding_change": inst_change,
+                    "holding_change_metric": "持股比例增幅（来源原口径，%）",
+                    "institution_count": _safe_float(row.get('机构数')),
+                    "institution_count_change": _safe_float(row.get('机构数变化')),
+                    "holding_ratio_pct": _safe_float(row.get('持股比例')),
+                })
+                result["source_chain"].append(f"institution:{inst_source}")
+
+        top10_df, top10_source, top10_errors = call_candidates([
+            ("stock_gdfx_top_10_em", {"symbol": shareholder_symbol, "date": report_date})
+            for report_date in institution_dates
+        ])
+        result["errors"].extend(top10_errors)
+        if top10_df is not None:
+            row = _extract_latest_row(top10_df, stock_code)
+            if row is not None:
+                # One shareholder's change cannot represent the entire top ten.
+                result['institution']['top10_holder_count'] = len(top10_df)
+                result['institution']['top10_report_date'] = top10_df.attrs.get('report_date')
+                result['institution']['top10_holder_change'] = None
+                result['institution']['top10_change_note'] = '未取得可比较的两期完整股东名单，合计变化未知'
+                result["source_chain"].append(f"top10:{top10_source}")
+
         # Earnings forecast
         forecast_df, forecast_source, forecast_errors = call_candidates([
             ("stock_yjyg_em", {"date": report_date})
@@ -504,33 +678,6 @@ class AkshareFundamentalAdapter:
                 result["earnings"]["dividend"] = dividend_payload
                 result["source_chain"].append(f"dividend:{dividend_source}")
 
-        # Institution / top shareholders
-        inst_df, inst_source, inst_errors = call_candidates([
-            ("stock_institute_hold", {
-                "symbol": f"{report_date[:4]}{int(report_date[4:6]) // 3}",
-            })
-            for report_date in report_dates
-        ], stock_code=stock_code)
-        result["errors"].extend(inst_errors)
-        if inst_df is not None:
-            row = _extract_latest_row(inst_df, stock_code)
-            if row is not None:
-                inst_change = _safe_float(_pick_by_keywords(row, ["增减", "变化", "变动", "持股变化"]))
-                result["institution"]["institution_holding_change"] = inst_change
-                result["source_chain"].append(f"institution:{inst_source}")
-
-        top10_df, top10_source, top10_errors = call_candidates([
-            ("stock_gdfx_top_10_em", {"symbol": shareholder_symbol, "date": report_date})
-            for report_date in report_dates
-        ])
-        result["errors"].extend(top10_errors)
-        if top10_df is not None:
-            row = _extract_latest_row(top10_df, stock_code)
-            if row is not None:
-                holder_change = _safe_float(_pick_by_keywords(row, ["增减", "变化", "持股变化", "变动"]))
-                result["institution"]["top10_holder_change"] = holder_change
-                result["source_chain"].append(f"top10:{top10_source}")
-
         has_content = bool(result["growth"] or result["earnings"] or result["institution"])
         result["status"] = "partial" if has_content else ("failed" if result["errors"] else "not_supported")
         return result
@@ -552,19 +699,31 @@ class AkshareFundamentalAdapter:
         market = _to_sina_tx_symbol(stock_code)[:2]
         stock_code = _normalize_code(stock_code)
         stock_df, stock_source, stock_errors = self._call_df_candidates([
+            ("_capital_history_em", {"stock": stock_code, "market": market}),
+            ("_capital_snapshot_em", {"stock": stock_code, "market": market}),
             ("stock_individual_fund_flow", {"stock": stock_code, "market": market}),
         ])
         result["errors"].extend(stock_errors)
         if stock_df is not None and "日期" in stock_df:
             dates = pd.to_datetime(stock_df["日期"], errors="coerce")
+            stock_df = stock_df.loc[dates.notna() & dates.le(pd.Timestamp.now().normalize())].copy()
+            stock_df['_date'] = dates.loc[stock_df.index]
+            stock_df = stock_df.sort_values('_date').drop_duplicates('_date')
+            dates = stock_df['_date']
             if dates.notna().any():
                 row = stock_df.loc[dates.idxmax()]
                 net_inflow = _safe_float(row.get("主力净流入-净额"))
                 if net_inflow is not None and math.isfinite(net_inflow):
                     result["stock_flow"] = {
+                        **({'fetch_retries': stock_df.attrs['transport_retries']}
+                           if stock_df.attrs.get('transport_retries') else {}),
+                        **({'window_source': stock_df.attrs['window_source']}
+                           if stock_df.attrs.get('window_source') else {}),
+                        "trade_date": dates.max().date().isoformat(),
+                        "currency": "CNY",
                         "main_net_inflow": net_inflow,
-                        "inflow_5d": None,
-                        "inflow_10d": None,
+                        "inflow_5d": self._capital_window_sum(stock_df, 5),
+                        "inflow_10d": self._capital_window_sum(stock_df, 10),
                     }
                     result["source_chain"].append(f"capital_stock:{stock_source}")
 
@@ -590,6 +749,14 @@ class AkshareFundamentalAdapter:
         has_content = bool(result["stock_flow"] or result["sector_rankings"]["top"] or result["sector_rankings"]["bottom"])
         result["status"] = "partial" if has_content else ("failed" if result["errors"] else "not_supported")
         return result
+
+    @staticmethod
+    def _capital_window_sum(frame: pd.DataFrame, sessions: int) -> Optional[float]:
+        key = f'inflow_{sessions}d'
+        if key in frame.attrs:
+            return _safe_float(frame.attrs[key])
+        values = [_safe_float(v) for v in frame['主力净流入-净额'].tail(sessions)]
+        return sum(values) if len(values) == sessions and all(v is not None for v in values) else None
 
     def get_dragon_tiger_flag(self, stock_code: str, lookback_days: int = 20) -> Dict[str, Any]:
         """

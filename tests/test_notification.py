@@ -1711,6 +1711,31 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             ],
         }
 
+    @mock.patch('src.notification.get_config')
+    def test_cn_holdings_and_capital_flow_are_rendered_without_ai(self, config):
+        config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(code='000858', name='五粮液', sentiment_score=50,
+            trend_prediction='震荡', operation_advice='观望', analysis_summary='测试')
+        result.fundamental_context = self._make_fundamental_context()
+        result.fundamental_context.update({
+            'institution': {'status': 'partial', 'data': {'report_date': '2026-06-30',
+                'institution_count': 12, 'institution_count_change': -2,
+                'holding_ratio_pct': 3.5, 'institution_holding_change': None}},
+            'capital_flow': {'status': 'ok', 'data': {'stock_flow': {
+                'trade_date': '2026-10-23', 'main_net_inflow': 117848848,
+                'inflow_5d': -200000000, 'inflow_10d': None}}},
+        })
+        for report in (service.generate_single_stock_report(result),
+                       service.generate_dashboard_report([result], report_date='2026-10-24')):
+            self.assertIn('机构数量变化（家）: -2', report)
+            self.assertIn('持股比例增幅（来源原口径）: N/A', report)
+            self.assertIn('交易日期: 2026-10-23', report)
+            self.assertIn('1.18 亿元', report)
+            self.assertIn('近5个交易日净流入: -2.00 亿元', report)
+            self.assertIn('近10个交易日净流入: N/A', report)
+            self.assertIn('前十大股东合计变化保持未知', report)
+
     @mock.patch("src.notification.get_config")
     def test_generate_single_stock_report_appends_fundamental_blocks(
         self, mock_get_config: mock.MagicMock

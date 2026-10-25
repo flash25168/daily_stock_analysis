@@ -106,11 +106,12 @@ class TestFundamentalAdapter(unittest.TestCase):
             "_call_df_candidates",
             side_effect=[
                 (fin_df, "stock_financial_abstract", []),
+                (None, None, []),  # separately bounded cash-flow supplement
+                (None, None, []),  # institution
+                (None, None, []),  # top ten
                 (forecast_df, "stock_yjyg_em", []),
                 (quick_df, "stock_yjkb_em", []),
                 (dividend_df, "stock_fhps_detail_em", []),
-                (None, None, []),
-                (None, None, []),
             ],
         ):
             result = adapter.get_fundamental_bundle("600519")

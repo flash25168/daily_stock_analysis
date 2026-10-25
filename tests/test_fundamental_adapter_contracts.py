@@ -13,6 +13,14 @@ from data_provider.fundamental_adapter import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _exercise_legacy_akshare_fallback(monkeypatch):
+    # This file checks the SDK fallback contract; direct HTTP is covered in
+    # test_fundamental_recovery without allowing offline tests to use a network.
+    monkeypatch.setattr(AkshareFundamentalAdapter, '_capital_history_em', lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(AkshareFundamentalAdapter, '_capital_snapshot_em', lambda *a, **k: pd.DataFrame())
+
+
 @pytest.mark.parametrize("code, market", [("600519", "sh"), ("000001", "sz"), ("bj920001", "bj")])
 def test_capital_flow_uses_market_and_latest_amount(monkeypatch, code, market):
     calls = []
@@ -28,7 +36,7 @@ def test_capital_flow_uses_market_and_latest_amount(monkeypatch, code, market):
     monkeypatch.setitem(sys.modules, "akshare", SimpleNamespace(stock_individual_fund_flow=individual))
     result = AkshareFundamentalAdapter().get_capital_flow(code)
     assert calls == [(code.removeprefix("bj"), market)]
-    assert result["stock_flow"] == {"main_net_inflow": -20, "inflow_5d": None, "inflow_10d": None}
+    assert result["stock_flow"] == {"trade_date": "2026-09-30", "currency": "CNY", "main_net_inflow": -20, "inflow_5d": None, "inflow_10d": None}
 
 
 @pytest.mark.parametrize("value", [0, -123, None, float("nan"), float("inf")])
@@ -87,7 +95,7 @@ def test_capital_flow_keeps_stock_amount_when_sector_amounts_are_all_missing(mon
 
     result = AkshareFundamentalAdapter().get_capital_flow("600519")
 
-    assert result["stock_flow"] == {"main_net_inflow": 20, "inflow_5d": None, "inflow_10d": None}
+    assert result["stock_flow"] == {"trade_date": "2026-09-30", "currency": "CNY", "main_net_inflow": 20, "inflow_5d": None, "inflow_10d": None}
     assert result["sector_rankings"] == {"top": [], "bottom": []}
     assert result["status"] == "partial"
     assert "capital_stock:stock_individual_fund_flow" in result["source_chain"]
@@ -184,7 +192,7 @@ def test_capital_flow_real_akshare_missing_sector_amounts_reach_manager_and_agen
 
     assert context["status"] == "ok"
     assert context["coverage"] == {"status": "ok"}
-    assert context["data"]["stock_flow"] == {"main_net_inflow": 20, "inflow_5d": None, "inflow_10d": None}
+    assert context["data"]["stock_flow"] == {"trade_date": "2026-09-30", "currency": "CNY", "main_net_inflow": 20, "inflow_5d": None, "inflow_10d": None}
     assert context["data"]["sector_rankings"] == {"top": [], "bottom": []}
     assert context["errors"] == []
     assert {entry["provider"] for entry in context["source_chain"]} == {
@@ -248,14 +256,16 @@ def test_bulk_endpoints_filter_target_before_stopping_period_fallback(monkeypatc
     assert result["errors"] == ["stock_yjkb_em:ValueError"]
     assert result["earnings"]["forecast_summary"] == "目标预告"
     assert result["earnings"]["quick_report_summary"] == "每股收益1.2元"
-    assert result["institution"] == {
-        "institution_holding_change": 3.0, "top10_holder_change": 100.0,
-    }
+    assert result["institution"]["institution_count_change"] == 3.0
+    assert result["institution"]["institution_holding_change"] is None
+    assert result["institution"]["top10_holder_change"] is None
+    assert result["institution"]["top10_holder_count"] == 1
+    assert result["institution"]["report_date"] == "2026-03-31"
     assert calls == [
-        ("forecast", "20260630"), ("forecast", "20260331"),
-        ("quick", "20260630"), ("quick", "20260331"),
         ("institution", "20262"), ("institution", "20261"),
         ("top10", "sh600519", "20260630"),
+        ("forecast", "20260630"), ("forecast", "20260331"),
+        ("quick", "20260630"), ("quick", "20260331"),
     ]
 
 

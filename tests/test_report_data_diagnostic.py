@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('diagnose_report_data', Path(__file__).resolve().parents[1] / 'scripts/diagnose_report_data.py')
 module = importlib.util.module_from_spec(spec)
@@ -20,6 +21,24 @@ class DiagnosticTests(unittest.TestCase):
 
     def test_missing_shell(self):
         self.assertEqual(module.summarize_block(None)['status'], 'missing')
+
+    def test_list_coverage_emits_only_field_names(self):
+        result = module.summarize_block({'status': 'ok', 'data': {'top': [{'name': 'private-value'}], 'bottom': []}})
+        self.assertEqual(result['populated_fields'], ['top'])
+        self.assertNotIn('private-value', str(result))
+
+    def test_preview_uses_real_builder_without_initializing_clients(self):
+        with patch('src.notification.NotificationService.__init__', side_effect=AssertionError('no client initialization')):
+            preview = module.render_fundamental_preview({
+                'earnings': {'data': {'financial_report': {'report_date': '2026-06-30',
+                    'revenue': 100000000, 'operating_cash_flow': -2153568792.32}}},
+                'capital_flow': {'data': {'stock_flow': {'currency': 'CNY',
+                    'trade_date': '2026-10-23', 'main_net_inflow': 117848848}}},
+            })
+        self.assertIn('2026-06-30', preview)
+        self.assertIn('-21.54 亿元', preview)
+        self.assertIn('交易日期: 2026-10-23', preview)
+        self.assertIn('1.18 亿元', preview)
 
     def test_nested_financial_fields_visible_without_values(self):
         result = module.summarize_block({'status': 'ok', 'data': {
