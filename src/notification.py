@@ -2327,9 +2327,18 @@ class NotificationService(
                 '> Periodic disclosure; not today’s institutional purchases. Top-ten aggregate change is unavailable without two comparable full lists.' if english else '> 定期披露数据，不代表当日机构买卖；没有可比的两期完整名单时，前十大股东合计变化保持未知。', '',
             ])
         if flow.get('main_net_inflow') is not None:
+            source_note = []
+            if flow.get('provider') == 'sina':
+                source_note = [
+                    '- Source: Sina; super-large + large orders; all windows use the same source.'
+                    if english else '- 数据来源: 新浪财经；超大单＋大单净额，所有窗口使用同一来源。',
+                    '> Vendor definitions differ; do not directly compare with Eastmoney amounts.'
+                    if english else '> 与东方财富的订单分类口径可能不同，金额不可直接横向比较。',
+                ]
             lines.extend([
                 '### Main capital flow' if english else '### 💰 个股主力资金流', '',
                 f"- {'Trade date' if english else '交易日期'}: {self._format_text(flow.get('trade_date'))}",
+                *source_note,
                 f"- {'Daily net inflow' if english else '当日主力净流入'}: {self._format_amount_cn(flow.get('main_net_inflow'), 'CNY')}",
                 f"- {'5-session net inflow' if english else '近5个交易日净流入'}: {self._format_amount_cn(flow.get('inflow_5d'), 'CNY')}",
                 f"- {'10-session net inflow' if english else '近10个交易日净流入'}: {self._format_amount_cn(flow.get('inflow_10d'), 'CNY')}",

@@ -405,6 +405,73 @@ class AkshareFundamentalAdapter:
         frame.attrs['transport_retries'] = attempt
         return frame
 
+    def _capital_history_sina(self, stock: str, market: str) -> pd.DataFrame:
+        """Single-security, closed-session flow in CNY from Sina's own page API.
+
+        Its page labels r0_net/r1_net as super-large/large order net amounts.
+        The page divides each by 10,000 for display in 万; the API is in yuan.
+        This endpoint does not echo the symbol: identity is request-scoped,
+        recorded explicitly, rather than claimed as independently verified.
+        """
+        import json
+        from urllib.parse import urlencode
+        from urllib.request import Request, urlopen
+        from src.core.trading_calendar import build_market_phase_context, get_trading_dates
+
+        if market not in ('sh', 'sz') or not re.fullmatch(r'\d{6}', stock):
+            return pd.DataFrame()
+        clock = build_market_phase_context(market='cn')
+        if clock.phase.value not in ('postmarket', 'premarket', 'non_trading') or clock.warnings:
+            raise ValueError('capital history: reliable closed-session calendar required')
+        expected = clock.effective_daily_bar_date
+        sessions = get_trading_dates('cn', expected - timedelta(days=45), expected)
+        if sessions is None or len(sessions) < 10:
+            raise ValueError('capital history: calendar sessions unavailable')
+        required = [day.date().isoformat() for day in sessions[-10:]]
+        symbol = market + stock
+        params = {'page': 1, 'num': 10, 'sort': 'opendate', 'asc': 0, 'daima': symbol}
+        request = Request(
+            'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/'
+            'MoneyFlow.ssl_qsfx_lscjfb?' + urlencode(params),
+            headers={'User-Agent': 'Mozilla/5.0',
+                     'Referer': 'https://vip.stock.finance.sina.com.cn/moneyflow/'})
+        with urlopen(request, timeout=4) as response:
+            payload = json.load(response)
+        if not isinstance(payload, list) or not 1 <= len(payload) <= 10:
+            raise ValueError('capital history: invalid response shape')
+        records = []
+        seen = set()
+        for row in payload:
+            if not isinstance(row, dict):
+                raise ValueError('capital history: invalid row')
+            # Some API versions may echo identity; never accept a mismatch.
+            if (any(str(row[key]) != symbol for key in ('symbol', 'daima') if key in row)
+                    or ('code' in row and str(row['code']) != stock)):
+                raise ValueError('capital history: wrong security')
+            day = row.get('opendate')
+            if day not in required or day in seen:
+                raise ValueError('capital history: stale, duplicate or non-session date')
+            seen.add(day)
+            values = [row.get('r0_net'), row.get('r1_net')]
+            amounts = [_safe_float(value) for value in values]
+            # Do not parse a ratio/percentage or missing leg as an amount.
+            valid = all(amount is not None and not isinstance(raw, bool)
+                        and not (isinstance(raw, str) and '%' in raw)
+                        for raw, amount in zip(values, amounts))
+            amount = _safe_float(sum(amounts)) if valid else None
+            records.append({'日期': day, '主力净流入-净额': amount})
+        frame = pd.DataFrame(records).sort_values('日期')
+        if required[-1] not in seen or _safe_float(frame.iloc[-1]['主力净流入-净额']) is None:
+            raise ValueError('capital history: latest session amount unavailable')
+        frame.attrs.update({'provider': 'sina', 'calculation': 'super_large_plus_large',
+                            'identity_validation': 'request_scoped'})
+        for count in (5, 10):
+            window = frame.loc[frame['日期'].isin(required[-count:])]
+            values = [_safe_float(value) for value in window['主力净流入-净额']]
+            frame.attrs[f'inflow_{count}d'] = (
+                _safe_float(sum(values)) if len(values) == count and all(v is not None for v in values) else None)
+        return frame
+
     def _capital_snapshot_em(self, stock: str, market: str) -> pd.DataFrame:
         """Closed-session fallback using the same vendor's verified flow fields.
 
@@ -460,7 +527,7 @@ class AkshareFundamentalAdapter:
         errors: List[str] = []
         for func_name, kwargs in candidates:
             try:
-                if func_name in ('_cashflow_statement_em', '_capital_history_em', '_capital_snapshot_em'):
+                if func_name in ('_cashflow_statement_em', '_capital_history_em', '_capital_snapshot_em', '_capital_history_sina'):
                     fn = getattr(self, func_name)
                 else:
                     import akshare as ak
@@ -699,6 +766,7 @@ class AkshareFundamentalAdapter:
         market = _to_sina_tx_symbol(stock_code)[:2]
         stock_code = _normalize_code(stock_code)
         stock_df, stock_source, stock_errors = self._call_df_candidates([
+            ("_capital_history_sina", {"stock": stock_code, "market": market}),
             ("_capital_history_em", {"stock": stock_code, "market": market}),
             ("_capital_snapshot_em", {"stock": stock_code, "market": market}),
             ("stock_individual_fund_flow", {"stock": stock_code, "market": market}),
@@ -715,6 +783,8 @@ class AkshareFundamentalAdapter:
                 net_inflow = _safe_float(row.get("主力净流入-净额"))
                 if net_inflow is not None and math.isfinite(net_inflow):
                     result["stock_flow"] = {
+                        **{key: stock_df.attrs[key] for key in
+                           ('provider', 'calculation', 'identity_validation') if key in stock_df.attrs},
                         **({'fetch_retries': stock_df.attrs['transport_retries']}
                            if stock_df.attrs.get('transport_retries') else {}),
                         **({'window_source': stock_df.attrs['window_source']}
@@ -726,6 +796,13 @@ class AkshareFundamentalAdapter:
                         "inflow_10d": self._capital_window_sum(stock_df, 10),
                     }
                     result["source_chain"].append(f"capital_stock:{stock_source}")
+
+        if result['stock_flow'].get('provider') == 'sina':
+            # Do not discard recovered independent stock data while waiting for
+            # an optional ranking endpoint on the failing vendor. Boards have
+            # their own stage; stock data remains useful without sector ranks.
+            result['status'] = 'partial'
+            return result
 
         sector_df, sector_source, sector_errors = self._call_df_candidates([
             ("stock_sector_fund_flow_rank", {}),

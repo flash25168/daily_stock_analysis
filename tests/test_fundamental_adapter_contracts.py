@@ -19,6 +19,7 @@ def _exercise_legacy_akshare_fallback(monkeypatch):
     # test_fundamental_recovery without allowing offline tests to use a network.
     monkeypatch.setattr(AkshareFundamentalAdapter, '_capital_history_em', lambda *a, **k: pd.DataFrame())
     monkeypatch.setattr(AkshareFundamentalAdapter, '_capital_snapshot_em', lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(AkshareFundamentalAdapter, '_capital_history_sina', lambda *a, **k: pd.DataFrame())
 
 
 @pytest.mark.parametrize("code, market", [("600519", "sh"), ("000001", "sz"), ("bj920001", "bj")])

@@ -77,6 +77,18 @@
 
 ## 后续字段修复与验收
 
+### 独立资金流来源
+
+东方财富历史和收盘快照仍共享上游，不能视作真正独立容灾。沪深个股现在先查询新浪资金页使用的单证券历史接口，再回退到现有东财候选。一次最多10条记录，网络超时4秒，不增加付费数据服务、密钥、AI调用或通知次数。仅可靠交易日历判定的盘后、盘前及非交易日可用；最新记录必须是预期最近交易日。按交易日历核对5/10个交易日，窗口缺一日或金额缺失就显示N/A，不从更早记录凑数。0和负数保留，百分比不冒充金额。
+
+新浪官方页面脚本[历史成交分布](https://n.sinaimg.cn/finance/cnstock/pc/zjlx.z.js?ver=1.1)把`r0_net`/`r1_net`标为超大单/大单净额，原始人民币元在展示时除以10000转万元；本项目将二者相加作为该来源的主力净额，5/10日全段沿用同一来源。报告显示“新浪财经；超大单＋大单净额”，不将新浪与东财分类金额直接比较或混算。参考[新浪资金流说明](https://finance.sina.com.cn/360desktop/stock/data/20150710/140922650279.shtml)与[资金页面](https://vip.stock.finance.sina.com.cn/moneyflow/)。行情收盘价仍由原行情链路提供，不用资金接口的trade字段覆盖。
+
+该单证券接口依靠请求参数`daima=市场+股票代码`限定股票，正常响应不回显证券身份，诊断保留`identity_validation=request_scoped`，不声称独立核实了回显代码；如果响应提供symbol/daima/code且不匹配则拒绝。新浪自身故障或日历不可用时仍可能取不到，已有东财回退继续生效，绝不补零。新浪取到个股数据后不再等待东财行业排名，避免外部超时让已恢复字段一起丢失；行业强弱仍由原有boards阶段获取。
+
+小白复核：仓库Actions → 数据源诊断（不调用AI）→ Run workflow，使用main（修复未合并时选修复分支）。查看Summary两只样本的`capital_flow.status`、`stock_flow.provider`字段覆盖，以及下方“个股主力资金流”的交易日期、来源、当日与5/10日金额；N/A表示未知。这个流程不会发微信。微信展示须等下一份新报告，并核对来源文字。回滚本次PR即可恢复东财优先，不需改密钥或变量。
+
+English: CN capital flow now prefers Sina's independent single-security history (four-second request, at most ten rows), with existing Eastmoney fallbacks retained. The amount is r0_net + r1_net in CNY; the renderer states the source and definition. All windows use the same provider and must contain the exact calendar sessions; missing values are not zero. Identity is request-scoped because the endpoint does not normally echo a symbol; mismatching optional identities are rejected. Recovered stock data returns without waiting for optional Eastmoney sector rankings. No model, notification, schedule, secret or paid-service configuration changes. No paired English topic document exists; this paragraph covers the new behavior.
+
 - 财务指标接口不提供经营现金流总额时，按当前财报的股票代码和报告期查询东财现金流量表；校验证券、报告期和公告日，保持人民币元口径。每股现金流、TTM和不同报告期的数值不替代该字段。
 - 资金历史请求只取10个交易日，检查响应代码、证券代码和15列结构；当日、5日、10日金额分别显示，窗口不足或非有限数值保持未知。日期单独展示，不能把历史记录当今日记录。免费接口存在间歇断连，成功一次不保证下一次成功；不伪造资金流，也不以板块涨跌幅替代。
 - 机构数变化（家）、持股比例、持股比例增幅（来源原口径，%）分开，不再将机构数变化映射成持股变化。定期披露不是当日机构成交；没有可比较的两期完整股东名单，前十大股东合计变化保持未知，不将首位股东变化当成全部变化。
