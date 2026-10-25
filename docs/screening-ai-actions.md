@@ -1,6 +1,6 @@
 # 候选 AI 分析 / Screened-candidate AI analysis
 
-## 当前行为（版本 5）
+## 当前行为（版本 6）
 
 用户明确选择两套都保留。`00-daily-analysis.yml` 完全不改：原固定自选股与大盘分析仍独立运行，
 原模型及 PushPlus 配置均保留。新增链路每天最多 3 只的限制**不约束原任务或账户总费用**。
@@ -12,6 +12,23 @@
 原交易日历、节假日跳过、日期不一致阻止推送、每策略日线核验上限 100 均保留。
 
 ## 每日额度
+
+### 本仓库的主板与预算范围
+
+- 自动选股只接受六位代码且前缀为`000/001/002/003/600/601/603/605`的沪深主板A股；排除创业板、科创板、北交所、B股、基金及其他代码段，ST/退市名称标记也排除。主板科技行业股票只要符合其余条件仍可入选，不按行业名称一刀切。
+- 单只预算10000元，买入一手100股后另预留100元费用，故参考股价须为正且≤99元；99.01元起排除。100元是保守预留，不是对实际手续费的报价。缺失、非有限值、零价及百分比字符串不能当作可买入价格；次日价格、费用和实际拟买股数须人工重算，不自动下单。
+- 范围过滤位于全市场快照与策略/日线候选上限之间，避免不合范围股票占用100只核验名额。策略阈值与每日最多3只AI预算不变。技术因子分不是概率，不保证每天都有候选，不放宽范围凑数。
+- `screening_result.json`增加`universe_policy`，策略结果含`universe_audit`（原始数、符合数、按原因排除数）及`scope_rejected_from_top5`；去重候选保留参考`price`。候选、非AI摘要、AI报告均显示范围与预算说明。
+- AI计划、实际分析和推送均复核候选与同一策略名单、价格及规则版本。旧产物缺少范围版本，或名单被改成创业板/超预算/未知价格时，停止调用或推送；请重新运行筛选，不编辑旧名单绕过复核。额度记录仍保留，不因范围拦截而自动释放。
+- 这项限制适用于`01-screening-test.yml`的自动选股链路。`00-daily-analysis.yml`的自选日报名单独立，保留用户此前要求的两套任务；固定自选日报仍可能包含茅台等高价股票，不等于自动选股把它选入。
+
+小白验收：Actions →「每日自动选股与AI分析（最多3只）」→ Run workflow；选择main（未合并时选修复分支），`daily_limit`先选30，`run_ai`和`send_notification`均不勾选。Summary应出现上述范围说明；检查每个候选代码、参考价格和`universe_audit`。这是免费因子检查，不会发微信或调用AI。没有候选可以正常观察，不要直接勾AI重跑或删除当天额度。后续原定交易日任务才按原安排分析与推送。
+
+测试展示样例（虚构数据，非投资建议）：`300496/57.52`因非主板排除，`600519/1329`因预算排除，`000528/8.51`通过范围检查但仍需通过策略与日期核验。原来这些股票可一并参与策略排序，现在先限制范围后排序；报告新增“仅沪深主板、单只预算≤10000元、参考股价≤99元”。
+
+English: This fork's automated shortlist now applies a mainboard/affordability universe before bounded daily enrichment. Exact six-digit prefixes are 000/001/002/003/600/601/603/605; ST/delisting marks and invalid prices are excluded. A 100-share reference lot plus a CNY100 reserve must fit CNY10000, so the reference price ceiling is CNY99. The same policy and candidate identity/price are revalidated before AI and notifications; legacy artifacts without the policy version are blocked. Reports explain scope and next-day manual recalculation. Shared engine callers keep their existing behavior unless they explicitly supply the new optional snapshot filter. No separate English topic file exists, so this paragraph covers the behavior. Existing schedules, model relay, PushPlus and three-stock AI quota are unchanged. Revert this PR to roll back; no secrets or database migration.
+
+### 每日 AI 额度
 
 - 只从本轮通过日期核验的去重候选中，按原有两策略交替名次取最多 3 只；不跨策略比较分数，不回退到旧自选股。
 - 限制的是每天一批、最多 3 只股票，**不是最多 3 次 HTTP 请求**。原模型的参数恢复、重试或备用模型可能增加计费请求和 token。
