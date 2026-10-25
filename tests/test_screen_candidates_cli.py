@@ -41,7 +41,7 @@ class CandidateTest(unittest.TestCase):
             self.assertEqual(kwargs["post_analyzers"], ["scorecard"])
             self.assertIsNone(kwargs["context"])
             start = 1 if strategy == "volume_breakout" else 5
-            picks = [Pick(rank=i + 1, code=f"{start + i:06}", name="测试",
+            picks = [Pick(price=10, rank=i + 1, code=f"{start + i:06}", name="测试",
                           final_score=70, screen_score=70) for i in range(5)]
             return self.result(strategy, picks=picks)
         payload = run_screening(self.output, screen_fn=screen)
@@ -71,9 +71,9 @@ class CandidateTest(unittest.TestCase):
         self.assertNotIn("do-not-print-this", (self.output / "screening_result.json").read_text(encoding="utf-8"))
 
     def test_bad_quality_removed_and_source_urls_redacted(self):
-        picks = [Pick(rank=1, code="600000", name="测试", final_score=90, screen_score=90,
+        picks = [Pick(price=10, rank=1, code="600000", name="测试", final_score=90, screen_score=90,
                       daily_quality_flags="stale_cache"),
-                 Pick(rank=2, code="000001", name="测试", final_score=70, screen_score=70)]
+                 Pick(price=10, rank=2, code="000001", name="测试", final_score=70, screen_score=70)]
         result = run_screening(self.output, screen_fn=lambda strategy, **_: self.result(
             strategy, picks=picks, degradation=["failed https://example.com?token=private"] ))
         self.assertEqual([row["code"] for row in result["candidates"]], ["000001"])
@@ -119,8 +119,20 @@ class CandidateTest(unittest.TestCase):
                  total_mv=10000000000, turnover_rate=2, volume_ratio=1, pe_ratio=15, pb_ratio=2),
         ])
         snapshot.attrs["snapshot_source"] = "offline_fixture"
+        # These would otherwise consume the bounded daily pool. Give them the
+        # same valid strategy inputs so this exercises scope, not factor luck.
+        template = snapshot.iloc[0].to_dict()
+        snapshot = pd.concat([snapshot, pd.DataFrame([
+            {**template, 'code': code, 'price': price, 'name': name}
+            for code, price, name in [('300496', 10, '创业板'), ('688981', 10, '科创板'),
+                ('920001', 10, '北交所'), ('600519', 1000, '高价主板'),
+                ('002001', 10, '*ST测试'), ('600002', None, '未知价格')]
+        ])], ignore_index=True)
+        snapshot.attrs['snapshot_source'] = 'offline_fixture'
 
         def enrich(frame, **_):
+            self.assertTrue(set(frame['code']).issubset({'600001', '000002'}))
+            self.assertGreater(len(frame), 0)
             enriched = frame.copy()
             for key, value in dict(signal_score=85, ma_bullish=True, price_above_ma20=True,
                                    macd_status="bullish", breakout_20d_pct=0.2, range_20d_pct=20,
@@ -145,6 +157,38 @@ class CandidateTest(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual([p["code"] for p in result["strategies"][0]["picks"]], ["600001"])
         self.assertEqual([p["code"] for p in result["strategies"][1]["picks"]], ["000002"])
+        scope = result['strategies'][0]['universe_audit']
+        self.assertEqual((scope['input_count'], scope['eligible_count']), (8, 2))
+        self.assertEqual(scope['rejected_counts']['outside_mainboard'], 3)
+
+    def test_mainboard_budget_boundaries_and_unknown_values(self):
+        from scripts.screening_scope import rejection_reason
+        for code in ('000001', '001001', '002001', '003001', '600001', '601001', '603001', '605001'):
+            self.assertIsNone(rejection_reason(code, '主板测试', 99))
+        for code in ('300496', '301001', '688981', '689001', '920001', '830001',
+                     '430001', '200001', '900901', '510300', '159001', 'sh600001', '00001', 600001):
+            self.assertEqual(rejection_reason(code, '测试', 10), 'outside_mainboard')
+        self.assertEqual(rejection_reason('600001', '测试', 99.01), 'over_budget')
+        for price in (None, 0, -1, True, float('nan'), float('inf'), '12%', ''):
+            self.assertEqual(rejection_reason('600001', '测试', price), 'price_unknown')
+        for name in ('*ST测试', 'st测试', '测试退'):
+            self.assertEqual(rejection_reason('600001', name, 10), 'risk_name')
+
+    def test_out_of_scope_engine_output_is_removed_before_candidate_files(self):
+        def screen(strategy, **kwargs):
+            return self.result(strategy, picks=[
+                Pick(rank=1, code='300496', name='中科创达', price=57.52, final_score=99, screen_score=99),
+                Pick(rank=2, code='600519', name='贵州茅台', price=1329, final_score=98, screen_score=98),
+                Pick(rank=3, code='000528', name='柳工', price=8.51, final_score=70, screen_score=70),
+            ])
+        payload = run_screening(self.output, screen_fn=screen)
+        self.assertEqual([row['code'] for row in payload['candidates']], ['000528'])
+        self.assertEqual(payload['candidates'][0]['price'], 8.51)
+        self.assertEqual(len(payload['strategies'][0]['scope_rejected_from_top5']), 2)
+        self.assertEqual((self.output / 'candidate_codes.txt').read_text().strip(), '000528')
+        report = (self.output / 'screening_report.md').read_text(encoding='utf-8')
+        self.assertIn('参考股价≤99元', report)
+        self.assertNotIn('中科创达', report)
 
     def clock(self):
         return {"calendar_status": "ok", "expected_daily_date": "2026-10-21",
@@ -248,7 +292,7 @@ class CandidateTest(unittest.TestCase):
         def screen(strategy, **kwargs):
             history = kwargs["daily_history_fetcher"]("600001", source="auto")
             seen.append(history)
-            return self.result(strategy, picks=[Pick(rank=1, code="600001", name="fixture",
+            return self.result(strategy, picks=[Pick(price=10, rank=1, code="600001", name="fixture",
                                                      final_score=70, screen_score=70)])
         hist = pd.DataFrame({"date": ["2026-10-20"], "close": [10]})
         clock = {**self.clock(), "phase": "premarket", "checked_at": "2026-10-22T00:05:00+08:00"}
@@ -264,7 +308,7 @@ class CandidateTest(unittest.TestCase):
     def test_unknown_snapshot_keeps_diagnostic_pick_but_not_ready(self):
         def screen(strategy, **kwargs):
             kwargs["daily_history_fetcher"]("600001")
-            return self.result(strategy, picks=[Pick(rank=1, code="600001", name="fixture",
+            return self.result(strategy, picks=[Pick(price=10, rank=1, code="600001", name="fixture",
                                                      final_score=70, screen_score=70)])
         hist = pd.DataFrame({"date": ["2026-10-21"], "close": [10]})
         clock = {**self.clock(), "phase": "premarket", "checked_at": "2026-10-22T00:05:00+08:00"}
@@ -280,7 +324,7 @@ class CandidateTest(unittest.TestCase):
     def test_ready_requires_explicit_dates_and_all_sampled_histories(self):
         def screen(strategy, **kwargs):
             kwargs["daily_history_fetcher"]("600001")
-            return self.result(strategy, picks=[Pick(rank=1, code="600001", name="fixture",
+            return self.result(strategy, picks=[Pick(price=10, rank=1, code="600001", name="fixture",
                                                      final_score=70, screen_score=70)])
         hist = pd.DataFrame({"date": ["2026-10-21"], "close": [10]})
         clock = {**self.clock(), "phase": "premarket", "checked_at": "2026-10-22T00:05:00+08:00"}

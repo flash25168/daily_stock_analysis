@@ -22,7 +22,7 @@ class ScreeningAITest(unittest.TestCase):
         template = self.payload["strategies"][0]["picks"][0]
         codes = ["600001", "600002", "600003", "600004", "600005"]
         self.payload["strategies"][0]["picks"] = [{**template, "code": code} for code in codes]
-        self.payload["candidates"] = [{"code": code, "name": "测试", "signals": []} for code in codes]
+        self.payload["candidates"] = [{"code": code, "name": "测试", "price": 10, "signals": []} for code in codes]
         self.write()
         self.clock_patch = patch("scripts.screening_ai.market_clock", return_value=self.clock)
         self.clock_patch.start()
@@ -48,6 +48,37 @@ class ScreeningAITest(unittest.TestCase):
         plan = self.ready_plan()
         self.assertEqual(len(plan["codes"]), 3)
         self.assertEqual(plan["budget_day"], "2026-10-21")
+
+    def test_old_or_ineligible_artifact_never_queries_budget(self):
+        original = json.loads(json.dumps(self.payload))
+        for mutation in ('old', 'board', 'price', 'unknown_price', 'name'):
+            self.payload = json.loads(json.dumps(original))
+            if mutation == 'old':
+                self.payload.pop('universe_policy')
+            else:
+                row = self.payload['candidates'][0]
+                row.update({'board': {'code': '300496'}, 'price': {'price': 100},
+                            'unknown_price': {'price': None}, 'name': {'name': '*ST测试'}}[mutation])
+            self.write()
+            api = Mock()
+            plan = prepare(self.path, api=api)
+            self.assertEqual(plan['status'], 'blocked')
+            self.assertEqual(plan['reason'], 'blocked_universe_policy')
+            api.assert_not_called()
+
+    def test_scope_changed_after_reservation_never_calls_model(self):
+        self.ready_plan()
+        self.payload['candidates'][0]['price'] = 100
+        self.write()
+        runner, api = Mock(), Mock()
+        with self.assertRaises(ValueError):
+            analyze(self.path, '123', api=api, runner=runner)
+        runner.assert_not_called()
+        api.assert_not_called()
+
+    def test_native_entry_rejects_non_mainboard_before_importing_model(self):
+        with self.assertRaises(ValueError):
+            native_analysis(['300496'])
 
     def test_empty_candidates_do_not_query_budget_or_model(self):
         self.payload["candidates"] = []
@@ -154,6 +185,17 @@ class ScreeningAITest(unittest.TestCase):
     def test_partial_analysis_is_not_reported_as_complete_or_sent(self):
         self.ready_plan()
         self.assertEqual(analyze(self.path, "123", api=self.api, runner=lambda codes: (codes[:1], "partial")), 1)
+        factory = Mock()
+        self.assertEqual(send_report(self.path, sender_factory=factory), 1)
+        factory.assert_not_called()
+
+    def test_old_report_with_different_codes_is_not_sent(self):
+        self.ready_plan()
+        analyze(self.path, '123', api=self.api, runner=lambda codes: (codes, '# Safe report'))
+        path = self.path.parent / 'ai_result.json'
+        state = json.loads(path.read_text(encoding='utf-8'))
+        state['selected_codes'] = ['300496']
+        path.write_text(json.dumps(state), encoding='utf-8')
         factory = Mock()
         self.assertEqual(send_report(self.path, sender_factory=factory), 1)
         factory.assert_not_called()

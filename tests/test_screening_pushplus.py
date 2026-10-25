@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 from scripts.screen_candidates import main as screening_main, schedule_gate
 from scripts.send_screening_candidates import notification_gate, send_candidates
+from scripts.screening_scope import policy_descriptor
 
 
 class ScreeningPushplusTest(unittest.TestCase):
@@ -33,7 +34,8 @@ class ScreeningPushplusTest(unittest.TestCase):
         return {"status": "ok", "ready_for_automation": True, "date_audit_version": 3,
                 "market_clock": self.clock, "created_at": self.clock["checked_at"],
                 "daily_limit_per_strategy": 100, "llm_enabled": False, "notifications_enabled": False,
-                "strategies": strategies, "candidates": [{"code": "600001", "name": "测试", "signals": []}]}
+                "universe_policy": policy_descriptor(),
+                "strategies": strategies, "candidates": [{"code": "600001", "name": "测试", "price": 10, "signals": []}]}
 
     def write(self, payload):
         self.path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -92,6 +94,20 @@ class ScreeningPushplusTest(unittest.TestCase):
         with patch("scripts.send_screening_candidates.market_clock", return_value=self.clock):
             self.assertEqual(send_candidates(self.path, scheduled=True, sender_factory=factory), 0)
         factory.assert_not_called()
+
+    def test_outdated_scope_or_gem_candidate_never_initializes_sender(self):
+        for old in (True, False):
+            payload = self.payload()
+            if old:
+                payload.pop('universe_policy')
+            else:
+                payload['candidates'][0]['code'] = '300496'
+            self.write(payload)
+            factory = Mock()
+            with patch('scripts.send_screening_candidates.market_clock', return_value=self.clock):
+                self.assertEqual(notification_gate(payload, self.clock, scheduled=False), 'blocked_universe_policy')
+                self.assertEqual(send_candidates(self.path, sender_factory=factory), 1)
+            factory.assert_not_called()
 
     def test_native_sender_https_request_and_accepted_status(self):
         self.write(self.payload())
