@@ -75,6 +75,37 @@
 
 回滚代码可在合并PR页面选择Revert。仅想恢复原等待时长，可将这两个变量设回8或删除；报告样本区可保留。没有新增或修改密钥。不保证财报、机构、资金流、板块或新闻全部恢复。
 
-## English summary
+## 后续字段修复与验收
+
+- 财务指标接口不提供经营现金流总额时，按当前财报的股票代码和报告期查询东财现金流量表；校验证券、报告期和公告日，保持人民币元口径。每股现金流、TTM和不同报告期的数值不替代该字段。
+- 资金历史请求只取10个交易日，检查响应代码、证券代码和15列结构；当日、5日、10日金额分别显示，窗口不足或非有限数值保持未知。日期单独展示，不能把历史记录当今日记录。免费接口存在间歇断连，成功一次不保证下一次成功；不伪造资金流，也不以板块涨跌幅替代。
+- 机构数变化（家）、持股比例、持股比例增幅（来源原口径，%）分开，不再将机构数变化映射成持股变化。定期披露不是当日机构成交；没有可比较的两期完整股东名单，前十大股东合计变化保持未知，不将首位股东变化当成全部变化。
+- 单股和汇总报告均固定追加机构与资金流摘要，不依赖AI是否在正文主动引用这些字段；港台三大法人原有展示不变。
+- GPT-6系列在首次请求前省略temperature，原有路由别名解析、错误恢复与其他模型规则继续生效。依据官方部署指南以及当前中转服务default-only报错；没有更换模型或中转配置。
+- 六项旧格式测试改为当前手机纵向文本契约，并恢复涨跌颜色标记；保留行情金额、单位、英文/中文和红涨/绿涨的实际检查。
+
+微信验收：长截图已确认两股正文及财务/板块区块存在，但原图在会话中缩小，不能可靠核对每个数字。请分别放大两股的“财务摘要”“机构持股”“个股主力资金流”，检查财报日期、现金流正负号、亿元换算、资金流交易日与N/A。旧消息不会随代码合并自动更新，须核对后续新报告。没有为展示验收新增付费模型调用。
+
+以下为**离线格式测试数据**，并非行情或投资结论，作为无法直接截取手机页面的替代展示证据：
+
+> ### 🏦 机构持股（定期披露）
+> - 报告期: 2026-06-30
+> - 机构数量变化（家）: -2
+> - 持股比例: 3.50%
+> - 持股比例增幅（来源原口径）: N/A
+>
+> ### 💰 个股主力资金流
+> - 交易日期: 2026-10-23
+> - 当日主力净流入: 1.18 亿元
+> - 近5个交易日净流入: -2.00 亿元
+> - 近10个交易日净流入: N/A
+
+无AI复核仍使用 Actions → 数据源诊断（不调用AI），选择修复分支运行。Summary中检查`financial_report.operating_cash_flow`、`stock_flow.main_net_inflow`及机构独立字段。诊断JSON只列字段名，不输出密钥或原始异常；摘要另外追加`report_fields.md`，重用正式报告的字段渲染器，展示这两只公开样本的财务、机构和资金流金额/日期。它不初始化通知客户端、不调用模型，也不发送微信，不能代替手机端最终验收。日常中转、PushPlus、股票名单、筛选预算及人工下单规则不变。回滚使用PR的Revert；所有未披露、接口失败或不可比较的数据继续保持未知。
+
+### English field-recovery notes
+
+Cash flow is supplemented from the exact issuer and disclosed statement period in CNY, with identity/period/notice checks. Capital history is bounded to ten sessions and validates response identity and row shape; dates and units are displayed explicitly. Institutional count changes are distinct from provider-defined holding-ratio growth. A first shareholder's change is no longer misrepresented as an aggregate top-ten change. Deterministic report blocks expose the available fields independently of AI prose. GPT-6 requests omit temperature before the first call. Six stale layout assertions now verify mobile text while preserving color/amount/unit contracts. Free endpoints remain intermittent; no complete-data or phone-pixel acceptance claim is made. The Chinese-only operating instructions have this English behavior summary; no existing paired English document exists.
+
+## Earlier change: English summary
 
 The supplied diagnostic predates `09159e87`. Its seven unknown-turnover rows are already excluded by the latest sample aggregator. This patch displays the validated sample separately in reports and prompts, preserving missing canonical market fields and partial signal scoring. It updates stale contract tests and forwards existing fundamental timeout Repository variables to the native report, screened AI and no-AI diagnostic steps. Defaults remain eight seconds; test with 45 seconds total and 12 seconds per fetch before any paid rerun. Provider outages, parsing errors, pending request quarantine, credentials and untested news coverage remain separate causes. No secrets, schedules, three-candidate limits or notification configuration are changed. Full SDK imports, hosted CI and actual data delivery still require acceptance. Revert the eventual PR or remove timeout overrides to roll back.
