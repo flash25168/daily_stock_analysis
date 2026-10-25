@@ -14,6 +14,33 @@ from data_provider.fundamental_adapter import AkshareFundamentalAdapter
 
 
 class FundamentalRecoveryTest(unittest.TestCase):
+    def test_closed_snapshot_recovers_exact_security_date_and_amount_windows(self):
+        from datetime import date
+        from io import BytesIO
+        clock = SimpleNamespace(phase=SimpleNamespace(value='non_trading'), warnings=[],
+            effective_daily_bar_date=date(2026, 10, 23))
+        row = {'f12': '000858', 'f13': 0, 'f124': 1792740876,
+            'f62': 117848848, 'f164': -58236905, 'f174': 54324920}
+        adapter = AkshareFundamentalAdapter()
+        with patch('src.core.trading_calendar.build_market_phase_context', return_value=clock), \
+             patch('urllib.request.urlopen', side_effect=lambda *a, **k: BytesIO(
+                json.dumps({'rc': 0, 'data': {'diff': [row]}}).encode())):
+            frame = adapter._capital_snapshot_em('000858', 'sz')
+            with patch.object(adapter, '_call_df_candidates', side_effect=[(frame, 'snapshot', []), (None, None, [])]):
+                flow = adapter.get_capital_flow('000858')['stock_flow']
+            self.assertEqual(flow['trade_date'], '2026-10-23')
+            self.assertEqual(flow['main_net_inflow'], 117848848)
+            self.assertEqual(flow['inflow_5d'], -58236905)
+            self.assertEqual(flow['inflow_10d'], 54324920)
+            self.assertEqual(flow['window_source'], 'provider_snapshot')
+            for key, wrong in [('f12', '600519'), ('f13', 1), ('f124', 1792654476),
+                               ('f124', 1792720000), ('f62', None), ('f62', True)]:
+                original = row[key]
+                row[key] = wrong
+                with self.assertRaises(ValueError):
+                    adapter._capital_snapshot_em('000858', 'sz')
+                row[key] = original
+
     def test_holdings_use_disclosed_period_before_optional_queries(self):
         calls = []
         fin = pd.DataFrame({'SECUCODE': ['600519.SH'], 'REPORT_DATE': ['2026-06-30'], 'ROEJQ': [12]})
