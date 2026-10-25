@@ -368,6 +368,8 @@ class AkshareFundamentalAdapter:
     def _capital_history_em(self, stock: str, market: str) -> pd.DataFrame:
         """Bounded version of AkShare's Eastmoney history request (10 sessions)."""
         import json
+        import time
+        from urllib.error import HTTPError, URLError
         from urllib.parse import urlencode
         from urllib.request import Request, urlopen
 
@@ -377,8 +379,19 @@ class AkshareFundamentalAdapter:
                 'ut': 'b2884a393a59ad64002292a3e90d46a5'}
         request = Request('https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?' + urlencode(params),
             headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://data.eastmoney.com/'})
-        with urlopen(request, timeout=5) as response:
-            payload = json.load(response)
+        deadline = time.monotonic() + 5
+        for attempt in range(2):
+            try:
+                with urlopen(request, timeout=max(0.1, deadline - time.monotonic())) as response:
+                    payload = json.load(response)
+                break
+            except (URLError, TimeoutError, ConnectionError) as exc:
+                if (attempt or time.monotonic() >= deadline
+                        or isinstance(exc, HTTPError) and exc.code < 500):
+                    raise
+                # One bounded transport retry for intermittent disconnects;
+                # schema/JSON/permission failures do not trigger this retry.
+                time.sleep(min(0.5, max(0, deadline - time.monotonic())))
         data = payload.get('data') or {}
         if payload.get('rc') != 0 or str(data.get('code')) != stock:
             raise ValueError('capital history: invalid response identity')
@@ -388,7 +401,9 @@ class AkshareFundamentalAdapter:
             if len(fields) != 15:
                 raise ValueError('capital history: invalid row shape')
             records.append({'日期': fields[0], '主力净流入-净额': fields[1]})
-        return pd.DataFrame(records)
+        frame = pd.DataFrame(records)
+        frame.attrs['transport_retries'] = attempt
+        return frame
 
     def _call_df_candidates(
         self,
@@ -533,6 +548,49 @@ class AkshareFundamentalAdapter:
                 financial['operating_cash_flow'] = cash
                 result['source_chain'].append(f'cashflow:{cash_source}')
 
+        # Prioritize holdings before optional forecasts/dividends. Once the
+        # issuer's statement period is known, do not spend the budget querying
+        # an undisclosed quarter first or silently mix reporting periods.
+        institution_dates = ([financial['report_date'].replace('-', '')]
+            if financial.get('report_date') else report_dates)
+        # Institution / top shareholders
+        inst_df, inst_source, inst_errors = call_candidates([
+            ("stock_institute_hold", {
+                "symbol": f"{report_date[:4]}{int(report_date[4:6]) // 3}",
+            })
+            for report_date in institution_dates
+        ], stock_code=stock_code)
+        result["errors"].extend(inst_errors)
+        if inst_df is not None:
+            row = _extract_latest_row(inst_df, stock_code)
+            if row is not None:
+                # Institution count changes are not holding-ratio changes.
+                inst_change = _safe_float(row.get('持股比例增幅'))
+                result["institution"].update({
+                    "report_date": inst_df.attrs.get('report_date'),
+                    "institution_holding_change": inst_change,
+                    "holding_change_metric": "持股比例增幅（来源原口径，%）",
+                    "institution_count": _safe_float(row.get('机构数')),
+                    "institution_count_change": _safe_float(row.get('机构数变化')),
+                    "holding_ratio_pct": _safe_float(row.get('持股比例')),
+                })
+                result["source_chain"].append(f"institution:{inst_source}")
+
+        top10_df, top10_source, top10_errors = call_candidates([
+            ("stock_gdfx_top_10_em", {"symbol": shareholder_symbol, "date": report_date})
+            for report_date in institution_dates
+        ])
+        result["errors"].extend(top10_errors)
+        if top10_df is not None:
+            row = _extract_latest_row(top10_df, stock_code)
+            if row is not None:
+                # One shareholder's change cannot represent the entire top ten.
+                result['institution']['top10_holder_count'] = len(top10_df)
+                result['institution']['top10_report_date'] = top10_df.attrs.get('report_date')
+                result['institution']['top10_holder_change'] = None
+                result['institution']['top10_change_note'] = '未取得可比较的两期完整股东名单，合计变化未知'
+                result["source_chain"].append(f"top10:{top10_source}")
+
         # Earnings forecast
         forecast_df, forecast_source, forecast_errors = call_candidates([
             ("stock_yjyg_em", {"date": report_date})
@@ -574,44 +632,6 @@ class AkshareFundamentalAdapter:
                 result["earnings"]["dividend"] = dividend_payload
                 result["source_chain"].append(f"dividend:{dividend_source}")
 
-        # Institution / top shareholders
-        inst_df, inst_source, inst_errors = call_candidates([
-            ("stock_institute_hold", {
-                "symbol": f"{report_date[:4]}{int(report_date[4:6]) // 3}",
-            })
-            for report_date in report_dates
-        ], stock_code=stock_code)
-        result["errors"].extend(inst_errors)
-        if inst_df is not None:
-            row = _extract_latest_row(inst_df, stock_code)
-            if row is not None:
-                # Institution count changes are not holding-ratio changes.
-                inst_change = _safe_float(row.get('持股比例增幅'))
-                result["institution"].update({
-                    "report_date": inst_df.attrs.get('report_date'),
-                    "institution_holding_change": inst_change,
-                    "holding_change_metric": "持股比例增幅（来源原口径，%）",
-                    "institution_count": _safe_float(row.get('机构数')),
-                    "institution_count_change": _safe_float(row.get('机构数变化')),
-                    "holding_ratio_pct": _safe_float(row.get('持股比例')),
-                })
-                result["source_chain"].append(f"institution:{inst_source}")
-
-        top10_df, top10_source, top10_errors = call_candidates([
-            ("stock_gdfx_top_10_em", {"symbol": shareholder_symbol, "date": report_date})
-            for report_date in report_dates
-        ])
-        result["errors"].extend(top10_errors)
-        if top10_df is not None:
-            row = _extract_latest_row(top10_df, stock_code)
-            if row is not None:
-                # One shareholder's change cannot represent the entire top ten.
-                result['institution']['top10_holder_count'] = len(top10_df)
-                result['institution']['top10_report_date'] = top10_df.attrs.get('report_date')
-                result['institution']['top10_holder_change'] = None
-                result['institution']['top10_change_note'] = '未取得可比较的两期完整股东名单，合计变化未知'
-                result["source_chain"].append(f"top10:{top10_source}")
-
         has_content = bool(result["growth"] or result["earnings"] or result["institution"])
         result["status"] = "partial" if has_content else ("failed" if result["errors"] else "not_supported")
         return result
@@ -648,6 +668,8 @@ class AkshareFundamentalAdapter:
                 net_inflow = _safe_float(row.get("主力净流入-净额"))
                 if net_inflow is not None and math.isfinite(net_inflow):
                     result["stock_flow"] = {
+                        **({'fetch_retries': stock_df.attrs['transport_retries']}
+                           if stock_df.attrs.get('transport_retries') else {}),
                         "trade_date": dates.max().date().isoformat(),
                         "currency": "CNY",
                         "main_net_inflow": net_inflow,
