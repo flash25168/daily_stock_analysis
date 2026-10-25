@@ -261,10 +261,10 @@ def test_bulk_endpoints_filter_target_before_stopping_period_fallback(monkeypatc
     assert result["institution"]["top10_holder_count"] == 1
     assert result["institution"]["report_date"] == "2026-03-31"
     assert calls == [
-        ("forecast", "20260630"), ("forecast", "20260331"),
-        ("quick", "20260630"), ("quick", "20260331"),
         ("institution", "20262"), ("institution", "20261"),
         ("top10", "sh600519", "20260630"),
+        ("forecast", "20260630"), ("forecast", "20260331"),
+        ("quick", "20260630"), ("quick", "20260331"),
     ]
 
 

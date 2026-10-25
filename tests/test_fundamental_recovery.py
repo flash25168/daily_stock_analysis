@@ -14,6 +14,44 @@ from data_provider.fundamental_adapter import AkshareFundamentalAdapter
 
 
 class FundamentalRecoveryTest(unittest.TestCase):
+    def test_holdings_use_disclosed_period_before_optional_queries(self):
+        calls = []
+        fin = pd.DataFrame({'SECUCODE': ['600519.SH'], 'REPORT_DATE': ['2026-06-30'], 'ROEJQ': [12]})
+        inst = pd.DataFrame({'证券代码': ['600519'], '机构数': [12], '机构数变化': [-4],
+            '持股比例': [3], '持股比例增幅': [2.5]})
+
+        def run(items, **kwargs):
+            if not items:
+                return None, None, []
+            name = items[0][0]
+            calls.append(name)
+            if name == 'stock_financial_analysis_indicator_em':
+                return fin, name, []
+            if name == 'stock_institute_hold':
+                self.assertEqual(items, [('stock_institute_hold', {'symbol': '20262'})])
+                return inst, name, []
+            if name == 'stock_gdfx_top_10_em':
+                self.assertEqual(items[0][1]['date'], '20260630')
+            return None, None, []
+
+        result = AkshareFundamentalAdapter().get_fundamental_bundle('600519', candidate_runner=run)
+        self.assertLess(calls.index('stock_institute_hold'), calls.index('stock_yjyg_em'))
+        self.assertEqual(result['institution']['institution_count_change'], -4)
+        self.assertEqual(result['institution']['institution_holding_change'], 2.5)
+
+    def test_capital_disconnect_retries_once_within_shared_network_budget(self):
+        from io import BytesIO
+        from urllib.error import URLError
+        payload = {'rc': 0, 'data': {'code': '000858', 'klines': [
+            '2026-10-23,10,0,0,0,0,0,0,0,0,0,12,0,0,0']}}
+        with patch('urllib.request.urlopen', side_effect=[URLError('connection reset'),
+                BytesIO(json.dumps(payload).encode())]) as get, patch('time.sleep') as sleep:
+            frame = AkshareFundamentalAdapter()._capital_history_em('000858', 'sz')
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(frame.attrs['transport_retries'], 1)
+        self.assertLessEqual(get.call_args.kwargs['timeout'], 5)
+        sleep.assert_called_once()
+
     def test_cashflow_http_contract_validates_identity_period_and_notice(self):
         adapter = AkshareFundamentalAdapter()
         record = {'SECURITY_CODE': '600519', 'REPORT_DATE': '2026-06-30',
