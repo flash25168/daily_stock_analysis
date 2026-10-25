@@ -22,6 +22,88 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: 离线诊断输出测试
         run: python -m unittest discover -s tests -p test_report_data_diagnostic.py -v
+      - name: 交易所公开接口日期与单位核验
+        env:
+          TZ: Asia/Shanghai
+        run: |
+          python - <<'PY'
+          """Inspect public exchange payload dates/units, without model or notification clients."""
+          import io
+          import json
+          import logging
+          import os
+          from pathlib import Path
+          
+          import pandas as pd
+          import requests
+          
+          logging.disable(logging.CRITICAL)
+          
+          from src.core.trading_calendar import build_market_phase_context
+          
+          
+          def main():
+              clock = build_market_phase_context(market="cn")
+              trade_date = clock.effective_daily_bar_date.isoformat()
+              result = {
+                  "expected_date": trade_date,
+                  "calendar_warnings": list(clock.warnings),
+                  "model_called": False,
+                  "notification_sent": False,
+              }
+              root = Path("reports/data_diagnostics")
+              root.mkdir(parents=True, exist_ok=True)
+              sources = (
+                  ("sse", "https://query.sse.com.cn/commonQuery.do", {
+                      "sqlId": "COMMON_SSE_SJ_GPSJ_CJGK_MRGK_C",
+                      "PRODUCT_CODE": "01,02,03,11,17",
+                      "type": "inParams", "SEARCH_DATE": trade_date,
+                  }),
+                  ("szse", "https://www.szse.cn/api/report/ShowReport", {
+                      "SHOWTYPE": "xlsx", "CATALOGID": "1803_sczm",
+                      "TABKEY": "tab1", "txtQueryDate": trade_date,
+                  }),
+              )
+              for name, url, params in sources:
+                  try:
+                      referer = "https://www.sse.com.cn/" if name == "sse" else "https://www.szse.cn/"
+                      response = requests.get(
+                          url, params=params,
+                          headers={"Referer": referer, "User-Agent": "Mozilla/5.0"},
+                          timeout=(5, 12),
+                      )
+                      response.raise_for_status()
+                      if len(response.content) > 2_000_000:
+                          raise ValueError("response exceeds diagnostic size limit")
+                      if name == "sse":
+                          payload = response.json()
+                          public_rows = payload.get("result") if isinstance(payload, dict) else None
+                          result[name] = {"status": "received", "public_result": public_rows}
+                          (root / "exchange_sse_raw.json").write_text(
+                              json.dumps(public_rows, ensure_ascii=False, indent=2), encoding="utf-8"
+                          )
+                      else:
+                          frame = pd.read_excel(io.BytesIO(response.content), header=None, engine="openpyxl")
+                          result[name] = {
+                              "status": "received",
+                              "rows": frame.head(20).fillna("").astype(str).values.tolist(),
+                          }
+                          (root / "exchange_szse_raw.xlsx").write_bytes(response.content)
+                  except Exception as exc:
+                      # Do not print raw errors, arbitrary URLs, credentials or response bodies.
+                      result[name] = {"status": "unavailable", "error_type": type(exc).__name__}
+              text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
+              (root / "exchange_access.json").write_text(text, encoding="utf-8")
+              summary = "# 交易所公开数据核验（无AI）\n\n```json\n" + text + "\n```\n"
+              (root / "exchange_access.md").write_text(summary, encoding="utf-8")
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+                  handle.write(summary)
+              print(text)
+          
+          
+          if __name__ == "__main__":
+              main()
+          PY
       # Read-only access probe reuses the production Tushare client. No AI/notification secrets.
       - name: Tushare 官方接口权限检查
         env:
