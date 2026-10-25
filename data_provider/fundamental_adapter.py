@@ -405,6 +405,52 @@ class AkshareFundamentalAdapter:
         frame.attrs['transport_retries'] = attempt
         return frame
 
+    def _capital_snapshot_em(self, stock: str, market: str) -> pd.DataFrame:
+        """Closed-session fallback using the same vendor's verified flow fields.
+
+        f62/f164/f174 are CNY net amounts (day/5/10 sessions), not ratios.
+        f124 is the quote update timestamp, so accept it only after the close
+        on the calendar's expected session. A fresh fetch is not a fresh quote.
+        """
+        import json
+        from datetime import timezone
+        from urllib.parse import urlencode
+        from urllib.request import Request, urlopen
+        from src.core.trading_calendar import build_market_phase_context
+
+        if market not in ('sh', 'sz'):
+            return pd.DataFrame()
+        clock = build_market_phase_context(market='cn')
+        if clock.phase.value not in ('postmarket', 'premarket', 'non_trading') or any(
+            warning in clock.warnings for warning in ('calendar_error', 'calendar_unavailable')
+        ):
+            raise ValueError('capital snapshot: reliable closed-session calendar required')
+        market_id = 1 if market == 'sh' else 0
+        params = {'secids': f'{market_id}.{stock}', 'fields': 'f12,f13,f62,f124,f164,f174',
+                  'fltt': 2, 'invt': 2}
+        request = Request('https://push2.eastmoney.com/api/qt/ulist.np/get?' + urlencode(params),
+            headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://data.eastmoney.com/'})
+        with urlopen(request, timeout=3) as response:
+            payload = json.load(response)
+        rows = (payload.get('data') or {}).get('diff') or []
+        if payload.get('rc') != 0 or not isinstance(rows, list) or len(rows) != 1:
+            raise ValueError('capital snapshot: invalid response shape')
+        row = rows[0]
+        if str(row.get('f12')) != stock or row.get('f13') != market_id:
+            raise ValueError('capital snapshot: wrong security')
+        timestamp = _safe_float(row.get('f124'))
+        amount = _safe_float(row.get('f62'))
+        if timestamp is None or amount is None or isinstance(row.get('f62'), bool):
+            raise ValueError('capital snapshot: invalid timestamp or net amount')
+        updated = datetime.fromtimestamp(timestamp, timezone(timedelta(hours=8)))
+        if (updated.date() != clock.effective_daily_bar_date or updated.hour < 15
+                or updated > datetime.now(updated.tzinfo)):
+            raise ValueError('capital snapshot: stale, future or unclosed quote')
+        frame = pd.DataFrame([{'日期': updated.date().isoformat(), '主力净流入-净额': amount}])
+        frame.attrs.update({'inflow_5d': _safe_float(row.get('f164')),
+            'inflow_10d': _safe_float(row.get('f174')), 'window_source': 'provider_snapshot'})
+        return frame
+
     def _call_df_candidates(
         self,
         candidates: List[Tuple[str, Dict[str, Any]]],
@@ -414,7 +460,7 @@ class AkshareFundamentalAdapter:
         errors: List[str] = []
         for func_name, kwargs in candidates:
             try:
-                if func_name in ('_cashflow_statement_em', '_capital_history_em'):
+                if func_name in ('_cashflow_statement_em', '_capital_history_em', '_capital_snapshot_em'):
                     fn = getattr(self, func_name)
                 else:
                     import akshare as ak
@@ -654,6 +700,7 @@ class AkshareFundamentalAdapter:
         stock_code = _normalize_code(stock_code)
         stock_df, stock_source, stock_errors = self._call_df_candidates([
             ("_capital_history_em", {"stock": stock_code, "market": market}),
+            ("_capital_snapshot_em", {"stock": stock_code, "market": market}),
             ("stock_individual_fund_flow", {"stock": stock_code, "market": market}),
         ])
         result["errors"].extend(stock_errors)
@@ -670,6 +717,8 @@ class AkshareFundamentalAdapter:
                     result["stock_flow"] = {
                         **({'fetch_retries': stock_df.attrs['transport_retries']}
                            if stock_df.attrs.get('transport_retries') else {}),
+                        **({'window_source': stock_df.attrs['window_source']}
+                           if stock_df.attrs.get('window_source') else {}),
                         "trade_date": dates.max().date().isoformat(),
                         "currency": "CNY",
                         "main_net_inflow": net_inflow,
@@ -703,6 +752,9 @@ class AkshareFundamentalAdapter:
 
     @staticmethod
     def _capital_window_sum(frame: pd.DataFrame, sessions: int) -> Optional[float]:
+        key = f'inflow_{sessions}d'
+        if key in frame.attrs:
+            return _safe_float(frame.attrs[key])
         values = [_safe_float(v) for v in frame['主力净流入-净额'].tail(sessions)]
         return sum(values) if len(values) == sessions and all(v is not None for v in values) else None
 

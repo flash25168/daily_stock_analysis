@@ -3537,7 +3537,9 @@ class DataFetcherManager:
         """
         start = time.monotonic()
         deadline = start + max(0.0, budget_seconds)
-        weights = [8, 2, 4, 2, 1, 1, 1]
+        # Finance/cash/holdings precede optional forecasts and dividends. Keep
+        # room for observed 4-5s holdings latency without extending the bundle.
+        weights = [12, 4, 8, 2, 1, 1, 1]
         trace = []
 
         def candidates(items, *, stock_code=None):
