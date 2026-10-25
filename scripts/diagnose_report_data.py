@@ -98,6 +98,18 @@ def summarize_source(item):
     return result
 
 
+def render_fundamental_preview(context):
+    """Use the real report builder without constructing clients or sending anything."""
+    from types import SimpleNamespace
+    from src.notification import NotificationService
+
+    service = object.__new__(NotificationService)
+    lines = []
+    service._append_fundamental_blocks(lines, SimpleNamespace(
+        fundamental_context=context, report_language='zh'))
+    return '\n'.join(lines)
+
+
 def diagnose():
     import pandas as pd
     from src.core.trading_calendar import build_market_phase_context
@@ -154,13 +166,24 @@ def diagnose():
         'stage_budget_seconds': config.fundamental_stage_timeout_seconds,
         'fetch_timeout_seconds': config.fundamental_fetch_timeout_seconds}
     manager = DataFetcherManager()
+    previews = []
     for code in ('600519', '000858'):
         try:
             context = manager.get_fundamental_context(code, budget_seconds=config.fundamental_stage_timeout_seconds)
             output['fundamentals'][code] = {key: summarize_block(context.get(key)) for key in
                 ('valuation', 'growth', 'earnings', 'institution', 'capital_flow', 'dragon_tiger', 'boards')}
+            try:
+                preview = render_fundamental_preview(context)
+                previews.append(f'## {code}\n\n' + preview)
+                output['fundamentals'][code]['report_preview'] = {'rendered': bool(preview)}
+            except Exception as exc:
+                output['fundamentals'][code]['report_preview'] = {'failure': safe_failure(exc)}
         except Exception as exc:
             output['fundamentals'][code] = {'failure': safe_failure(exc)}
+    target = ROOT / 'reports/data_diagnostics'
+    target.mkdir(parents=True, exist_ok=True)
+    (target / 'report_fields.md').write_text(
+        '# 无AI字段展示预览\n\n与正式报告共用字段渲染器；不是AI分析，也未发送微信。\n\n' + '\n\n'.join(previews), encoding='utf-8')
     return output
 
 
@@ -175,6 +198,10 @@ def main():
     text = json.dumps(result, ensure_ascii=False, indent=2)
     (target / 'diagnostic.json').write_text(text, encoding='utf-8')
     (target / 'diagnostic.md').write_text('# 数据诊断（不调用模型、不发送通知）\n\n```json\n' + text + '\n```\n', encoding='utf-8')
+    preview_file = target / 'report_fields.md'
+    if preview_file.exists():
+        with (target / 'diagnostic.md').open('a', encoding='utf-8') as summary:
+            summary.write('\n\n' + preview_file.read_text(encoding='utf-8'))
     print(text)
 
 
