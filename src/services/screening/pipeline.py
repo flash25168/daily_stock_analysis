@@ -74,6 +74,7 @@ def screen(
     config: Config | None = None,
     progress_callback: Callable[[int, str], None] | None = None,
     daily_history_fetcher: Callable[..., pd.DataFrame] | None = None,
+    snapshot_filter: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> ScreenResult:
     """Execute stock screening with the given strategy.
 
@@ -105,6 +106,8 @@ def screen(
         config: Runtime config. Defaults to Config.from_env().
         daily_history_fetcher: Optional request-scoped daily-history provider.
             It is tried in place of the bundled fetcher without global patching.
+        snapshot_filter: Optional host universe restriction, applied before
+            strategy filtering and bounded daily-history selection.
 
     Returns:
         ScreenResult with ranked picks.
@@ -189,6 +192,10 @@ def screen(
             degradation.append(
                 f"Snapshot source fallback: last_good_cache stale_age_hours={stale_age}"
             )
+
+    if snapshot_filter is not None:
+        snapshot_df = snapshot_filter(snapshot_df)
+        degradation.append(f'Host universe restriction: {snapshot_count}->{len(snapshot_df)}')
 
     # 3. L1 hard filter. If a strategy needs daily features, first apply only
     # snapshot-safe filters, then enrich a narrowed candidate pool.
