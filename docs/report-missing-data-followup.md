@@ -81,6 +81,7 @@
 - 资金历史请求只取10个交易日，检查响应代码、证券代码和15列结构；当日、5日、10日金额分别显示，窗口不足或非有限数值保持未知。日期单独展示，不能把历史记录当今日记录。免费接口存在间歇断连，成功一次不保证下一次成功；不伪造资金流，也不以板块涨跌幅替代。
 - 机构数变化（家）、持股比例、持股比例增幅（来源原口径，%）分开，不再将机构数变化映射成持股变化。定期披露不是当日机构成交；没有可比较的两期完整股东名单，前十大股东合计变化保持未知，不将首位股东变化当成全部变化。
 - 已确定财报期间时，机构和前十大股东查询使用同一已披露期间，并优先于可选预告、快报和分红；不再先消耗预算查询尚未披露的季度。只有名单数量/说明而没有持股变化指标时，机构块标记为partial。资金连接失败在原5秒总网络预算内最多重试一次，JSON/身份/权限错误不触发该重试；发生恢复时诊断保留fetch_retries。
+- 历史资金接口失败时，备用查询东财`ulist.np/get`中的单一证券。f62/f164/f174分别为当日、5日和10日主力净流入金额，f124为行情更新时间戳；校验证券代码和市场、可靠交易日历所预期交易日、北京时间15点后更新且不在未来，才接受该收盘快照。未取到的窗口仍为N/A，注明`window_source=provider_snapshot`，不使用净占比代替金额。来源定义见[AkShare资金字段](https://github.com/akfamily/akshare/blob/main/akshare/stock/stock_fund_em.py)、[Efinance批量行情](https://github.com/Micro-sheep/efinance/blob/main/efinance/common/getter.py)与[时间戳定义](https://github.com/Micro-sheep/efinance/blob/main/efinance/common/config.py)。
 - 单股和汇总报告均固定追加机构与资金流摘要，不依赖AI是否在正文主动引用这些字段；港台三大法人原有展示不变。
 - GPT-6系列在首次请求前省略temperature，原有路由别名解析、错误恢复与其他模型规则继续生效。依据官方部署指南以及当前中转服务default-only报错；没有更换模型或中转配置。
 - 六项旧格式测试改为当前手机纵向文本契约，并恢复涨跌颜色标记；保留行情金额、单位、英文/中文和红涨/绿涨的实际检查。
@@ -108,6 +109,8 @@
 Cash flow is supplemented from the exact issuer and disclosed statement period in CNY, with identity/period/notice checks. Capital history is bounded to ten sessions and validates response identity and row shape; dates and units are displayed explicitly. Institutional count changes are distinct from provider-defined holding-ratio growth. A first shareholder's change is no longer misrepresented as an aggregate top-ten change. Deterministic report blocks expose the available fields independently of AI prose. GPT-6 requests omit temperature before the first call. Six stale layout assertions now verify mobile text while preserving color/amount/unit contracts. Free endpoints remain intermittent; no complete-data or phone-pixel acceptance claim is made. The Chinese-only operating instructions have this English behavior summary; no existing paired English document exists.
 
 Holdings queries now prioritize the issuer's known disclosed statement period before optional forecasts/dividends. A count/note-only institutional payload is partial. A connection failure may retry once within the original five-second network budget; parse/identity/permission failures are not retried by this transport repair.
+
+When history fails, a single-security Eastmoney closing snapshot can supply the same CNY net-flow fields. Identity, market, the calendar's expected session and a non-future quote timestamp after 15:00 Beijing time are mandatory. Provider-computed 5/10-session amounts retain their source marker; missing windows and ratios never become invented amounts.
 
 ## Earlier change: English summary
 
