@@ -3947,7 +3947,7 @@ class TestMarketAnalyzerBypassFix:
         assert "### 1. Market Summary" in result
         assert "### 3. Breadth & Liquidity" in result
         assert "- **Market Signal**:" in result
-        assert "Turnover 14567 (CNY 100m)" in result
+        assert "Turnover: 14567 (CNY 100m)" in result
         assert "### 4. Sector / Theme Highlights" in result
         assert "### 6. Strategy Framework" in result
         assert "### 一、市场总结" not in result
@@ -4095,9 +4095,14 @@ Sector text.
         result = ma._inject_data_into_review(review, overview)
 
         assert "- **Market Signal**: 66/100 (constructive, risk-on)" in result
-        assert "- **Breadth**: Advancers 3200 / Decliners 1800 / Flat 100;" in result
-        assert "Turnover 14567 (CNY 100m)" in result
-        assert "| Index | Last | Change % | Open | High | Low | Amplitude | Turnover (CNY 100m) |" in result
+        assert "- Advancers: 3200" in result
+        assert "- Decliners: 1800" in result
+        assert "- Flat: 100" in result
+        assert "Turnover: 14567 (CNY 100m)" in result
+        assert "**上证指数**" in result
+        assert "- Last / Change:" in result
+        assert "- Open / High / Low:" in result
+        assert "- Turnover (CNY 100m):" in result
         assert "#### Leading Industry Sectors" in result
         assert "| 1 | AI算力 | +3.25% |" in result
         assert "#### Lagging Industry Sectors" in result
@@ -4165,9 +4170,14 @@ Sector text.
         assert "盘面温度" not in drivers_line
         assert "操作建议" in result
         assert "盘面温度" not in result
-        assert "| 上涨/下跌/平盘 | 3200 / 1800 / 100 |" in result
-        assert "| 指数 | 最新 | 涨跌幅 | 开盘 | 最高 | 最低 | 振幅 | 成交额(亿) |" in result
-        assert "| 上证指数 | 3300.00 | 🟢 +0.36% | 3288.00 | 3312.00 | 3276.00 | 1.10% | 1450 |" in result
+        assert "- 上涨家数: 3200" in result
+        assert "- 下跌家数: 1800" in result
+        assert "- 平盘家数: 100" in result
+        assert "**上证指数**" in result
+        assert "- 最新 / 涨跌幅: 3300.00 / 🟢 +0.36%" in result
+        assert "- 开盘 / 最高 / 最低: 3288.00 / 3312.00 / 3276.00" in result
+        assert "- 振幅: 1.10%" in result
+        assert "- 成交额 (亿): 1450" in result
         assert "#### 行业板块领涨 Top 5" in result
         assert "| 1 | AI算力 | +3.25% |" in result
         assert "#### 近三日市场线索" not in result
@@ -4691,7 +4701,8 @@ Index text.
 
         assert "CNY 100m" not in result
         assert "Turnover (USD bn)" in result
-        assert "| S&P 500 | 5200.00 |" in result
+        assert "**S&P 500**" in result
+        assert "- Last / Change: 5200.00 /" in result
 
     def test_indices_block_uses_configured_red_up_color_scheme(self):
         from src.market_analyzer import MarketOverview, MarketIndex
@@ -4709,9 +4720,9 @@ Index text.
 
         result = ma._build_indices_block(overview)
 
-        assert "| 上证指数 | 3200.00 | 🔴 +0.68% |" in result
-        assert "| 深证成指 | 9800.00 | 🟢 -0.42% |" in result
-        assert "| 创业板指 | 2100.00 | ⚪ +0.00% |" in result
+        assert "**上证指数**\n- 最新 / 涨跌幅: 3200.00 / 🔴 +0.68%" in result
+        assert "**深证成指**\n- 最新 / 涨跌幅: 9800.00 / 🟢 -0.42%" in result
+        assert "**创业板指**\n- 最新 / 涨跌幅: 2100.00 / ⚪ +0.00%" in result
 
     def test_indices_block_keeps_green_up_default_color_scheme(self):
         from src.market_analyzer import MarketOverview, MarketIndex
@@ -4727,8 +4738,8 @@ Index text.
 
         result = ma._build_indices_block(overview)
 
-        assert "| 上证指数 | 3200.00 | 🟢 +0.68% |" in result
-        assert "| 深证成指 | 9800.00 | 🔴 -0.42% |" in result
+        assert "**上证指数**\n- 最新 / 涨跌幅: 3200.00 / 🟢 +0.68%" in result
+        assert "**深证成指**\n- 最新 / 涨跌幅: 9800.00 / 🔴 -0.42%" in result
 
     def test_no_private_attribute_access_in_market_analyzer_source(self):
         """Static guard: market_analyzer.py must not access private analyzer attrs."""

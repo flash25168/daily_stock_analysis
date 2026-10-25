@@ -14,6 +14,44 @@ from data_provider.fundamental_adapter import AkshareFundamentalAdapter
 
 
 class FundamentalRecoveryTest(unittest.TestCase):
+    def test_cashflow_http_contract_validates_identity_period_and_notice(self):
+        adapter = AkshareFundamentalAdapter()
+        record = {'SECURITY_CODE': '600519', 'REPORT_DATE': '2026-06-30',
+                  'NOTICE_DATE': '2026-08-15', 'NETCASH_OPERATE': 70690750119.06}
+        response = SimpleNamespace(raise_for_status=lambda: None,
+            json=lambda: {'result': {'data': [record]}})
+        with patch('requests.get', return_value=response) as get:
+            frame = adapter._cashflow_statement_em('600519', '2026-06-30')
+            self.assertEqual(frame.iloc[0].NETCASH_OPERATE, 70690750119.06)
+            self.assertIn('SECURITY_CODE="600519"', get.call_args.kwargs['params']['filter'])
+            self.assertEqual(get.call_args.kwargs['timeout'], 5)
+            for key, wrong in [('SECURITY_CODE', '000858'), ('REPORT_DATE', '2026-03-31'),
+                               ('NOTICE_DATE', '2099-01-01')]:
+                original = record[key]
+                record[key] = wrong
+                with self.assertRaises(ValueError):
+                    adapter._cashflow_statement_em('600519', '2026-06-30')
+                record[key] = original
+
+    def test_capital_http_identity_shape_and_windows(self):
+        from io import BytesIO
+        from urllib.parse import parse_qs, urlparse
+        adapter = AkshareFundamentalAdapter()
+        payload = {'rc': 0, 'data': {'code': '000858', 'klines': [
+            f'2026-09-{day:02d},{day},0,0,0,0,0,0,0,0,0,12,0,0,0' for day in range(1, 11)]}}
+        with patch('urllib.request.urlopen', side_effect=lambda *a, **k: BytesIO(json.dumps(payload).encode())) as get:
+            frame = adapter._capital_history_em('000858', 'sz')
+            params = parse_qs(urlparse(get.call_args.args[0].full_url).query)
+            self.assertEqual(params['lmt'], ['10'])
+            self.assertEqual(params['secid'], ['0.000858'])
+            with patch.object(adapter, '_call_df_candidates', side_effect=[(frame, 'direct', []), (None, None, [])]):
+                result = adapter.get_capital_flow('000858')
+            self.assertEqual(result['stock_flow']['inflow_5d'], 40)
+            self.assertEqual(result['stock_flow']['inflow_10d'], 55)
+            payload['data']['code'] = '600519'
+            with self.assertRaises(ValueError):
+                adapter._capital_history_em('000858', 'sz')
+
     def manager(self):
         manager = object.__new__(DataFetcherManager)
         manager._fundamental_adapter = AkshareFundamentalAdapter()
@@ -58,7 +96,7 @@ class FundamentalRecoveryTest(unittest.TestCase):
         for code, date in [('000858.SZ', '2026-06-30'), ('600519.SH', '2099-12-31')]:
             with self.subTest(code=code, date=date):
                 frame = pd.DataFrame({'SECUCODE': [code], 'REPORT_DATE': [date], 'ROEJQ': [123]})
-                calls = iter([(frame, 'stock_financial_analysis_indicator_em', [])] + [(None, None, [])] * 5)
+                calls = iter([(frame, 'stock_financial_analysis_indicator_em', [])] + [(None, None, [])] * 6)
                 result = AkshareFundamentalAdapter().get_fundamental_bundle(
                     '600519', candidate_runner=lambda *a, **k: next(calls))
                 self.assertEqual(result['growth'], {})

@@ -106,6 +106,7 @@ class TestFundamentalAdapter(unittest.TestCase):
             "_call_df_candidates",
             side_effect=[
                 (fin_df, "stock_financial_abstract", []),
+                (None, None, []),  # separately bounded cash-flow supplement
                 (forecast_df, "stock_yjyg_em", []),
                 (quick_df, "stock_yjkb_em", []),
                 (dividend_df, "stock_fhps_detail_em", []),

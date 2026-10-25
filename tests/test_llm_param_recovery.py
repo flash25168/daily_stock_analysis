@@ -11,6 +11,17 @@ from src.llm.generation_params import (
 )
 
 
+def test_gpt6_direct_and_router_alias_omit_temperature_before_first_request():
+    for model in ('openai/gpt-6.1-sol', 'openrouter/openai/gpt-6-astra', 'gpt6-sol'):
+        kwargs = apply_litellm_generation_params({'temperature': 0.7}, model, 0.7)
+        assert 'temperature' not in kwargs
+    models = [{'model_name': 'relay', 'litellm_params': {'model': 'openai/gpt-6.1-sol'}}]
+    kwargs = apply_litellm_generation_params({}, 'relay', 0.7, model_list=models)
+    assert 'temperature' not in kwargs
+    assert apply_litellm_generation_params({}, 'openai/gpt-4.1', 0.7)['temperature'] == 0.7
+    assert apply_litellm_generation_params({}, 'custom/gpt-60-demo', 0.7)['temperature'] == 0.7
+
+
 def test_temperature_default_only_error_sets_temperature_to_one() -> None:
     recovery = classify_litellm_generation_param_error(
         RuntimeError(
