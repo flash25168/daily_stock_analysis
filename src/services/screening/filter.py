@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 _DAILY_FILTER_DEFAULTS = {
     "change_60d_min": None,
     "change_60d_max": None,
+    "require_short_pullback": False,
     "require_ma_bullish": False,
     "require_price_above_ma20": False,
     "signal_score_min": None,
@@ -77,6 +78,7 @@ def apply_hard_filters(df: pd.DataFrame, filters: HardFilterConfig) -> pd.DataFr
 
     mask = _filter_min(result, mask, ["change_60d"], filters.change_60d_min)
     mask = _filter_max(result, mask, ["change_60d"], filters.change_60d_max)
+    mask = _filter_bool_true(result, mask, "short_pullback", filters.require_short_pullback)
     mask = _filter_bool_true(result, mask, "ma_bullish", filters.require_ma_bullish)
     mask = _filter_bool_true(result, mask, "price_above_ma20", filters.require_price_above_ma20)
     mask = _filter_min(result, mask, ["signal_score"], filters.signal_score_min)
@@ -243,6 +245,8 @@ def hard_filter_rejection_summary(
     record_min("change_60d_min", ["change_60d"], filters.change_60d_min)
     record_max("change_60d_max", ["change_60d"], filters.change_60d_max)
 
+    if filters.require_short_pullback:
+        record("require_short_pullback", _filter_bool_true(df, mask, "short_pullback", True))
     if filters.require_ma_bullish:
         record("require_ma_bullish", _filter_bool_true(df, mask, "ma_bullish", True))
     if filters.require_price_above_ma20:
@@ -343,6 +347,8 @@ def hard_filter_waterfall(
     record_min("change_60d_min", ["change_60d"], filters.change_60d_min)
     record_max("change_60d_max", ["change_60d"], filters.change_60d_max)
 
+    if filters.require_short_pullback:
+        record("require_short_pullback", _filter_bool_true(df, mask, "short_pullback", True), ["short_pullback"])
     if filters.require_ma_bullish:
         record("require_ma_bullish", _filter_bool_true(df, mask, "ma_bullish", True), ["ma_bullish"])
     if filters.require_price_above_ma20:
@@ -379,6 +385,7 @@ def requires_daily_features(filters: HardFilterConfig) -> bool:
     return any([
         filters.change_60d_min is not None,
         filters.change_60d_max is not None,
+        filters.require_short_pullback,
         filters.require_ma_bullish,
         filters.require_price_above_ma20,
         filters.signal_score_min is not None,

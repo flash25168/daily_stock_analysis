@@ -16,12 +16,15 @@ import time
 from typing import Callable
 
 import pandas as pd
+
+from src.short_term_rules import short_pullback
 import requests
 
 from src.core.trading_calendar import MarketPhase, build_market_phase_context, get_market_for_stock, is_market_open
 from src.services.screening.source_guard import call_with_timeout, parse_source_timeout_seconds
 
 _DAILY_FEATURE_DEFAULTS = {
+    "short_pullback": pd.NA,
     "daily_data_points": pd.NA,
     "change_60d": pd.NA,
     "ma5": pd.NA,
@@ -1016,6 +1019,7 @@ def compute_daily_features(hist: pd.DataFrame) -> dict[str, object]:
     )
 
     return {
+        "short_pullback": short_pullback(df),
         "daily_data_points": int(len(close)),
         "change_60d": None if change_60d is None else round(float(change_60d), 4),
         "ma5": last_ma5,
