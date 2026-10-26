@@ -340,6 +340,34 @@ def _financial_abstract_row(df: pd.DataFrame) -> Optional[pd.Series]:
 class AkshareFundamentalAdapter:
     """AkShare adapter for fundamentals, capital flow and dragon-tiger signals."""
 
+    def _has_tushare(self):
+        from src.config import get_config
+        token = get_config().tushare_token
+        return isinstance(token, str) and bool(token.strip())
+
+    def _tushare_fetcher(self):
+        from src.config import get_config
+        if not get_config().tushare_token:
+            raise ValueError('Tushare not configured')
+        if not hasattr(self, '_disclosure_fetcher'):
+            from .tushare_fetcher import TushareFetcher
+            self._disclosure_fetcher = TushareFetcher()
+        return self._disclosure_fetcher
+
+    def _financial_tushare(self, stock_code):
+        from .tushare_disclosures import financial_frame
+        return financial_frame(self._tushare_fetcher(), stock_code)
+
+    def _capital_tushare(self, stock, market):
+        from src.core.trading_calendar import build_market_phase_context, get_trading_dates
+        from .tushare_disclosures import capital_frame
+        clock = build_market_phase_context(market='cn')
+        if any(flag in clock.warnings for flag in ('calendar_error', 'calendar_unavailable')):
+            raise ValueError('unreliable calendar')
+        expected = clock.effective_daily_bar_date
+        sessions = get_trading_dates('cn', expected-timedelta(days=45), expected)
+        return capital_frame(self._tushare_fetcher(), stock, expected, [] if sessions is None else sessions)
+
     def _cashflow_statement_em(self, stock_code: str, report_date: str) -> pd.DataFrame:
         """Fetch only the requested issuer/period, amounts in CNY (not per share)."""
         import requests
@@ -527,7 +555,7 @@ class AkshareFundamentalAdapter:
         errors: List[str] = []
         for func_name, kwargs in candidates:
             try:
-                if func_name in ('_cashflow_statement_em', '_capital_history_em', '_capital_snapshot_em', '_capital_history_sina'):
+                if func_name in ('_financial_tushare', '_capital_tushare', '_cashflow_statement_em', '_capital_history_em', '_capital_snapshot_em', '_capital_history_sina'):
                     fn = getattr(self, func_name)
                 else:
                     import akshare as ak
@@ -577,7 +605,8 @@ class AkshareFundamentalAdapter:
         call_candidates = candidate_runner or self._call_df_candidates
 
         # Financial indicators
-        fin_df, fin_source, fin_errors = call_candidates([
+        fin_df, fin_source, fin_errors = call_candidates(
+            ([("_financial_tushare", {"stock_code": stock_code})] if self._has_tushare() else []) + [
             ("stock_financial_analysis_indicator_em", {
                 "symbol": f"{stock_code}.{shareholder_symbol[:2].upper()}",
                 "indicator": "按报告期",
@@ -588,7 +617,7 @@ class AkshareFundamentalAdapter:
         ])
         result["errors"].extend(fin_errors)
         if fin_df is not None:
-            if fin_source == "stock_financial_analysis_indicator_em":
+            if fin_source in ("stock_financial_analysis_indicator_em", "_financial_tushare"):
                 # This endpoint uses English field names and yuan units.
                 # Validate identity/period before translating into the existing contract.
                 if not {'SECUCODE', 'REPORT_DATE'}.issubset(fin_df.columns):
@@ -616,7 +645,7 @@ class AkshareFundamentalAdapter:
                 roe = _safe_float(_pick_by_keywords(row, ["净资产收益率", "ROE", "净资产收益"]))
                 gross_margin = _safe_float(_pick_by_keywords(row, ["毛利率"]))
                 report_date = _normalize_report_date(_pick_by_keywords(row, _DIVIDEND_KEYWORD_MAP["report_date"]))
-                is_wide = "指标" in fin_df or fin_source == 'stock_financial_analysis_indicator_em'
+                is_wide = "指标" in fin_df or fin_source in ('stock_financial_analysis_indicator_em', '_financial_tushare')
                 revenue = _safe_float(
                     row.get("营业总收入") if is_wide else _pick_by_keywords(row, ["营业总收入", "营业收入", "营收"])
                 )
@@ -765,7 +794,8 @@ class AkshareFundamentalAdapter:
 
         market = _to_sina_tx_symbol(stock_code)[:2]
         stock_code = _normalize_code(stock_code)
-        stock_df, stock_source, stock_errors = self._call_df_candidates([
+        stock_df, stock_source, stock_errors = self._call_df_candidates(
+            ([("_capital_tushare", {"stock": stock_code, "market": market})] if self._has_tushare() else []) + [
             ("_capital_history_sina", {"stock": stock_code, "market": market}),
             ("_capital_history_em", {"stock": stock_code, "market": market}),
             ("_capital_snapshot_em", {"stock": stock_code, "market": market}),
@@ -797,7 +827,7 @@ class AkshareFundamentalAdapter:
                     }
                     result["source_chain"].append(f"capital_stock:{stock_source}")
 
-        if result['stock_flow'].get('provider') == 'sina':
+        if result['stock_flow'].get('provider') in ('sina', 'tushare'):
             # Do not discard recovered independent stock data while waiting for
             # an optional ranking endpoint on the failing vendor. Boards have
             # their own stage; stock data remains useful without sector ranks.
