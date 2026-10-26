@@ -2335,6 +2335,13 @@ class NotificationService(
                     '> Vendor definitions differ; do not directly compare with Eastmoney amounts.'
                     if english else '> 与东方财富的订单分类口径可能不同，金额不可直接横向比较。',
                 ]
+            if flow.get('provider') == 'tushare':
+                source_note = [
+                    '- Source: Tushare moneyflow; large + super-large net orders; yuan, same source for every window.'
+                    if english else '- 数据来源: Tushare moneyflow；大单＋超大单净额，万元转元，所有窗口同源。',
+                    '> Provider order categories differ; do not mix with other providers.'
+                    if english else '> 数据商订单分类口径不同，不与其他来源拼接或直接比较。',
+                ]
             lines.extend([
                 '### Main capital flow' if english else '### 💰 个股主力资金流', '',
                 f"- {'Trade date' if english else '交易日期'}: {self._format_text(flow.get('trade_date'))}",
