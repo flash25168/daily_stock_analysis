@@ -28,7 +28,7 @@ SNAPSHOT = {
 ALL_FIELDS = {
     "name": "Example", "price": 5, "amount": 5, "total_mv": 5,
     "pe_ratio": 5, "pb_ratio": 5, "volume_ratio": 5, "turnover_rate": 5,
-    "change_pct": 5, "change_60d": 5, "ma_bullish": True,
+    "change_pct": 5, "change_60d": 5, "ma_bullish": True, "short_pullback": True,
     "price_above_ma20": True, "signal_score": 5, "macd_status": "bullish",
     "rsi_status": "bullish", "breakout_20d_pct": 5, "range_20d_pct": 5,
     "volume_ratio_20d": 5, "body_pct": 5, "pullback_to_ma20_pct": 5,
