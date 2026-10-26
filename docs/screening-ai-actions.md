@@ -114,3 +114,27 @@ All local model and notification tests are mocked. Live imports/configuration,
 GitHub reservation read/write and real model/report delivery require the user's first
 manual run. Restore the v4 workflow to stop the new paid path without altering the
 original task. Ordinary files can be installed before replacing the workflow.
+
+
+## MA5/MA10短线回踩与人工持仓复盘
+
+回踩数值策略升级为2.0：MA5 > MA10 > MA20；收盘位于MA5至其上方1%，或MA10至其上方2%；当日成交量严格低于此前5个交易日平均量的70%。此前MA20距离-2%至8%、20日量比≤1.5的条件已移除。原有流动性、信号分和波动风险检查继续执行，所以不保证每天有回踩候选。MA20用于趋势保护和第1—3交易日收盘止损条件复核。新闻和筹码仍由后续分析补充，技术筛选不冒充已经核实公告。
+
+数值规则和根目录strategies/shrink_pullback.yaml共同描述MA5/MA10支撑，不等于文字策略的所有可选加分都已程序化。突破规则仍按20日突破策略，未在本次暗改其阈值。
+
+持仓提醒是独立工作流“人工持仓短线复盘（无AI）”，北京时间工作日17:20计划执行（Actions可能延迟）。候选不等于买入，程序不会自动登记或下单。登记日算第0日，后续1/2/3个交易日分别复盘；第3日提醒人工决定是否结束短线观察，第0日及第3日之后不再主动推送本记录，所有日期仍按交易所日历。收盘低于MA20提示人工复核止损，不保证按MA20成交，也没有盘中实时监控。
+
+### 小白设置步骤
+
+1. GitHub仓库 → Settings → Environments → STOCK_LIST → Add environment secret。
+2. 名称填写 SCREENING_POSITIONS_JSON。只在真实买入后填JSON数组；不要把真实成本贴到聊天、仓库文件或公开变量。
+3. 格式示例（虚构记录，必须替换为你真实的股票和日期）：`[{"code":"000001","entry_date":"2026-10-26","entry_price":10.0,"shares":100}]`。支持最多10条不同主板持仓；价格为正数、股数为正100整数倍。没有持仓填 `[]`，平仓后删除对应记录。
+4. 原有PUSHPLUS_TOKEN和可选PUSHPLUS_TOPIC继续使用，不增加AI配置。没有登记时不会发送提醒。
+5. Actions → 人工持仓短线复盘（无AI） → Run workflow。首次保持“发送”未勾选以验证数据；不要反复点发送。
+6. 未获得最新完整日线、买入日期不是交易日或日历不可靠时，提醒为“无法判断”，不能按零价格计算。休市和开盘前不发送旧交易日提醒。
+
+发送前持久化独立当日提醒记录，重复或有争议的占用会阻止发送；失败不自动释放，避免未知送达状态自动重发。提醒与候选AI额度分开，不触发模型。真实持仓只经本机/Actions输入计算并发送至现有PushPlus；报告不写入公开Summary，也不把含成本的正文上传artifact。artifact只保存日期和任务占用信息。
+
+Tushare财报只用普通income/cashflow/fina_indicator，拒绝错股票、未披露或不同报告期拼接。moneyflow大单+超大单净额由万元转元，要求同源连续10个交易日，不与其他数据商拼接。权限或字段缺失继续走免费源，缺失不能填0。两份日报仍独立运行；自动候选3只限制不是整个应用所有入口共用的费用上限。
+
+English: short pullbacks require MA5 > MA10 > MA20, a held MA5/MA10 support band and volume below 70% of the preceding five sessions. Manual position reminders use exchange sessions, never infer purchases, never execute orders, and never call an AI model. Configure real positions only through the private SCREENING_POSITIONS_JSON secret.
