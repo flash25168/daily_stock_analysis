@@ -1,0 +1,58 @@
+name: 人工持仓短线复盘（无AI）
+on:
+  schedule:
+    - cron: '20 9 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      send_notification:
+        description: 发送人工持仓复盘到现有PushPlus
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: manual-position-review
+  cancel-in-progress: false
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    environment: STOCK_LIST
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: 安装依赖
+        run: python -m pip install -r requirements.txt
+      - name: 离线提醒测试
+        run: python -m unittest discover -s tests -p test_position_review.py -v
+      - name: 核对人工登记与收盘数据（无AI）
+        id: plan
+        env:
+          TZ: Asia/Shanghai
+          SCREENING_POSITIONS_JSON: ${{ secrets.SCREENING_POSITIONS_JSON }}
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          TUSHARE_HTTP_URL: ${{ vars.TUSHARE_HTTP_URL || secrets.TUSHARE_HTTP_URL }}
+        run: python scripts/track_positions.py prepare
+      - name: 发送前持久化当日提醒占用（失败不自动释放）
+        id: reserve
+        if: steps.plan.outputs.send == 'true' && (github.event_name == 'schedule' || inputs.send_notification == true)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.plan.outputs.name }}
+          path: reports/position_review/review_plan.json
+          retention-days: 30
+          if-no-files-found: error
+      - name: 推送人工复盘（不执行交易）
+        if: steps.reserve.outputs.artifact-id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          PUSHPLUS_TOPIC: ${{ vars.PUSHPLUS_TOPIC || secrets.PUSHPLUS_TOPIC }}
+          RESERVATION_ID: ${{ steps.reserve.outputs.artifact-id }}
+        run: python scripts/track_positions.py send --reservation-id "$RESERVATION_ID"
