@@ -141,6 +141,7 @@ class CandidateTest(unittest.TestCase):
                                    daily_quality_score=100, daily_quality_flags="",
                                    daily_source="offline_fixture").items():
                 enriched[key] = value
+            enriched["short_pullback"] = enriched["code"].eq("000002")
             enriched["volume_ratio_20d"] = enriched["code"].map({"600001": 1.8, "000002": 1.0})
             enriched.attrs["daily_success_count"] = len(enriched)
             return enriched

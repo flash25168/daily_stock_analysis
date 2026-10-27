@@ -49,7 +49,7 @@ class TestTushareHttpClient(unittest.TestCase):
             df = client.daily(ts_code="600519.SH", start_date="20260320", end_date="20260325")
 
         post_mock.assert_called_once_with(
-            "http://api.tushare.pro",
+            "https://api.tushare.pro",
             json={
                 "api_name": "daily",
                 "token": "demo-token",
@@ -129,7 +129,7 @@ class TestTushareFetcherCustomHttpUrl(unittest.TestCase):
             fetcher = TushareFetcher()
 
         self.assertIsInstance(fetcher._api, _TushareHttpClient)
-        self.assertEqual(fetcher._api._api_url, "http://api.tushare.pro")
+        self.assertEqual(fetcher._api._api_url, "https://api.tushare.pro")
 
     def test_query_posts_to_custom_endpoint(self) -> None:
         """端到端确保自定义 url 真正驱动 requests.post 的目标地址。"""

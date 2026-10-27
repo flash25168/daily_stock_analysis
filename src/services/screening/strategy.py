@@ -814,6 +814,7 @@ def _required_snapshot_fields(filters_config: HardFilterConfig) -> list[str]:
 def _required_daily_fields(filters_config: HardFilterConfig) -> list[str]:
     checks = [
         ("change_60d", filters_config.change_60d_min is not None or filters_config.change_60d_max is not None),
+        ("short_pullback", filters_config.require_short_pullback),
         ("ma_bullish", filters_config.require_ma_bullish),
         ("price_above_ma20", filters_config.require_price_above_ma20),
         ("signal_score", filters_config.signal_score_min is not None),

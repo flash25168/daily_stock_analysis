@@ -3,14 +3,14 @@
 # 缩量回踩选股策略
 name: shrink_pullback
 display_name: 缩量回踩
-description: 上升趋势中缩量回踩均线支撑，趋势延续的入场机会
-version: "1.1"
+description: MA5>MA10>MA20；收盘守住MA5或MA10附近，成交量低于前5日均量70%
+version: "2.0"
 category: trend
 tags: [trend, pullback, daily_k]
 analysis_skills: [shrink_pullback]
 style:
   risk_profile: balanced
-  holding_period: swing
+  holding_period: short_term
   execution_style: pullback_continuation
   market_regime: [risk_on, trend]
   capital_profile: medium_liquidity
@@ -23,12 +23,9 @@ screening:
     exclude_st: true
     amount_min: 80000000
     turnover_rate_min: 1.0
-    require_ma_bullish: true
+    require_short_pullback: true
     require_price_above_ma20: true
     signal_score_min: 65
-    volume_ratio_20d_max: 1.5
-    pullback_to_ma20_pct_min: -2.0
-    pullback_to_ma20_pct_max: 8.0
     volatility_20d_pct_max: 45.0
     max_drawdown_20d_pct_min: -12.0
     atr_20_pct_max: 6.5
