@@ -342,7 +342,7 @@ class AkshareFundamentalAdapter:
 
     def _has_tushare(self):
         from src.config import get_config
-        token = get_config().tushare_token
+        token = getattr(get_config(), "tushare_token", None)
         return isinstance(token, str) and bool(token.strip())
 
     def _tushare_fetcher(self):
