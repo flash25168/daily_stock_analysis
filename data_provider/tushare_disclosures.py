@@ -44,8 +44,8 @@ def financial_frame(fetcher, code, today=None):
     row = {'SECUCODE': ts_code, 'REPORT_DATE': pd.to_datetime(str(period), format='%Y%m%d').isoformat(),
            'NOTICE_DATE': pd.to_datetime(str(inc.ann_date), format='%Y%m%d').isoformat(),
            'TOTALOPERATEREVE': inc.get('total_revenue'), 'PARENTNETPROFIT': inc.get('n_income_attr_p'),
-           'NETCASH_OPERATE': cf.get('n_cashflow_act'), 'ROEJQ': indicator.get('roe'),
-           'TOTALOPERATEREVETZ': indicator.get('or_yoy'),
+           'NETCASH_OPERATE': cf.get('n_cashflow_act'), 'ROEJQ': indicator.get('roe_waa'),
+           'TOTALOPERATEREVETZ': indicator.get('tr_yoy'),
            'PARENTNETPROFITTZ': indicator.get('netprofit_yoy'), 'XSMLL': indicator.get('grossprofit_margin')}
     required_fields = {'TOTALOPERATEREVE', 'PARENTNETPROFIT', 'NETCASH_OPERATE'}
     for key in list(row)[3:]:
