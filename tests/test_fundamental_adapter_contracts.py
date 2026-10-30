@@ -13,6 +13,17 @@ from data_provider.fundamental_adapter import (
 )
 
 
+def _patch_akshare_http_get(monkeypatch, replacement):
+    """Keep real SDK parsing/parameters, stub either supported HTTP facade."""
+    import requests
+    monkeypatch.setattr(requests, "get", replacement)
+    try:
+        from akshare.utils import http
+    except ImportError:
+        return  # Older AkShare versions call requests.get directly.
+    monkeypatch.setattr(http, "get", replacement)
+
+
 @pytest.fixture(autouse=True)
 def _exercise_legacy_akshare_fallback(monkeypatch):
     # This file checks the SDK fallback contract; direct HTTP is covered in
@@ -133,7 +144,6 @@ def test_capital_flow_without_valid_date_is_unavailable(monkeypatch, dates):
 
 def test_capital_flow_real_akshare_request_uses_shenzhen_security(monkeypatch):
     import akshare as ak
-    import requests
 
     calls = []
 
@@ -144,7 +154,7 @@ def test_capital_flow_real_akshare_request_uses_shenzhen_security(monkeypatch):
             "2026-09-30,-20,0,0,0,0,-2,0,0,0,0,12,0,0,0",
         ]}})
 
-    monkeypatch.setattr(requests, "get", get)
+    _patch_akshare_http_get(monkeypatch, get)
     monkeypatch.setattr(ak, "stock_sector_fund_flow_rank", lambda: pd.DataFrame())
     result = AkshareFundamentalAdapter().get_capital_flow("000001")
     assert calls == ["0.000001"]
@@ -153,7 +163,6 @@ def test_capital_flow_real_akshare_request_uses_shenzhen_security(monkeypatch):
 
 def test_capital_flow_real_akshare_missing_sector_amounts_reach_manager_and_agent(monkeypatch):
     import akshare as ak
-    import requests
 
     from data_provider.base import DataFetcherManager
     from src.agent.tools.data_tools import _handle_get_capital_flow
@@ -180,7 +189,7 @@ def test_capital_flow_real_akshare_missing_sector_amounts_reach_manager_and_agen
 
     # Keep both AkShare implementations and the adapter/manager execution real;
     # replace only their HTTP boundary and runtime configuration.
-    monkeypatch.setattr(requests, "get", get)
+    _patch_akshare_http_get(monkeypatch, get)
     sector_df = ak.stock_sector_fund_flow_rank()
     assert sector_df["今日主力净流入-净额"].isna().all()
     calls.clear()
@@ -303,7 +312,6 @@ def test_installed_akshare_receives_valid_parameters_at_http_boundary(monkeypatc
     # Keep the real AkShare functions: mocking the adapter or permissive **kwargs
     # stubs would hide signature errors and upstream request construction.
     import akshare as ak
-    import requests
 
     calls = []
 
@@ -311,7 +319,7 @@ def test_installed_akshare_receives_valid_parameters_at_http_boundary(monkeypatc
         calls.append((url, dict(kwargs.get("params", {}))))
         raise RuntimeError("offline transport boundary")
 
-    monkeypatch.setattr(requests, "get", stop_at_http)
+    _patch_akshare_http_get(monkeypatch, stop_at_http)
     for name in (
         "stock_financial_abstract", "stock_financial_analysis_indicator", "stock_financial_analysis_indicator_em",
         "stock_fhps_detail_em", "stock_history_dividend_detail", "stock_dividend_cninfo",
