@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - [改进] 自动选股每策略最多10只、合并最多20只，日线核验扩大至300只；每日唯一AI批次最多5只，并区分AI与纯因子候选，保留日期、预算和数据质量保护。
+- [测试] AkShare实际SDK契约测试同时拦截旧requests入口与新版统一HTTP入口，保留原参数和资金流结果断言，避免离线测试意外联网。
 
 - [改进] 无AI数据诊断接入可选 Tushare Token，复用生产客户端检查官方接口权限并保存脱敏状态、记录数及日期；交易日历失败时跳过依赖日期的检查，保留原数据诊断和免费源回退。
 
