@@ -7,6 +7,8 @@ MAINBOARD_PREFIXES = ('000', '001', '002', '003', '600', '601', '603', '605')
 MAX_POSITION_YUAN = 10000
 FEE_RESERVE_YUAN = 100
 LOT_SIZE = 100
+PICKS_PER_STRATEGY = 10
+MAX_CANDIDATES = 20
 SCOPE_NOTICE = ('范围：仅沪深主板，排除创业板/科创板/北交所、ST及退市标记股票；'
                 '单只预算≤10000元，按100股预留100元费用，参考股价≤99元。'
                 '次日价格和实际费用变化后须重新核对，所有交易人工执行。')
