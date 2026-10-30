@@ -20,7 +20,7 @@ class ScreeningAITest(unittest.TestCase):
                       "expected_daily_date": "2026-10-21", "checked_at": "2026-10-21T17:17:00+08:00"}
         self.payload = fixtures.ScreeningPushplusTest.payload(SimpleNamespace(clock=self.clock))
         template = self.payload["strategies"][0]["picks"][0]
-        codes = ["600001", "600002", "600003", "600004", "600005"]
+        codes = [f"600{i:03}" for i in range(1, 7)]
         self.payload["strategies"][0]["picks"] = [{**template, "code": code} for code in codes]
         self.payload["candidates"] = [{"code": code, "name": "测试", "price": 10, "signals": []} for code in codes]
         self.write()
@@ -43,11 +43,24 @@ class ScreeningAITest(unittest.TestCase):
             return {"id": 123, "name": plan["budget_name"], "expired": False, "workflow_run": {"id": 42}}
         return {"total_count": 1, "artifacts": [{"id": 123}]}
 
-    def test_selects_no_more_than_three_in_existing_order(self):
-        self.assertEqual(select_codes(self.payload), ["600001", "600002", "600003"])
+    def test_selects_no_more_than_five_in_existing_order(self):
+        self.assertEqual(select_codes(self.payload), ["600001", "600002", "600003", "600004", "600005"])
         plan = self.ready_plan()
-        self.assertEqual(len(plan["codes"]), 3)
+        self.assertEqual(len(plan["codes"]), 5)
         self.assertEqual(plan["budget_day"], "2026-10-21")
+
+    def test_sixth_stock_is_not_analyzed_but_appears_in_report(self):
+        self.ready_plan()
+        runner = Mock(side_effect=lambda codes: (codes, "# AI result"))
+        self.assertEqual(analyze(self.path, "123", api=self.api, runner=runner), 0)
+        self.assertEqual(len(runner.call_args.args[0]), 5)
+        report = (self.path.parent / "ai_report.md").read_text(encoding="utf-8")
+        self.assertIn("600006 测试：仅因子筛选，未做AI分析", report)
+        self.assertIn("600005 测试：已完成AI分析", report)
+
+    def test_native_entry_rejects_six_before_initializing_pipeline(self):
+        with self.assertRaises(ValueError):
+            native_analysis([f"600{i:03}" for i in range(1, 7)])
 
     def test_old_or_ineligible_artifact_never_queries_budget(self):
         original = json.loads(json.dumps(self.payload))

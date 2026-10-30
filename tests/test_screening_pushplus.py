@@ -48,6 +48,21 @@ class ScreeningPushplusTest(unittest.TestCase):
         midnight = {**self.clock, "checked_at": "2026-10-22T00:30:00+08:00", "phase": "premarket"}
         self.assertEqual(schedule_gate(midnight), "not_today_after_close")
 
+    def test_expanded_size_gate_accepts_twenty_and_rejects_overflow(self):
+        payload = self.payload()
+        for index, strategy in enumerate(payload["strategies"]):
+            template = strategy["picks"][0]
+            strategy["picks"] = [{**template, "code": f"600{index*10+i:03}"} for i in range(10)]
+            strategy["date_audit"] = [{key: pick[key] for key in ("code", "date_audit_status", "daily_trade_date", "snapshot_trade_date")} for pick in strategy["picks"]]
+        payload["candidates"] = [dict(code=p["code"], name=p["name"], price=p["price"], signals=[])
+                                 for strategy in payload["strategies"] for p in strategy["picks"]]
+        self.assertEqual(notification_gate(payload, self.clock, scheduled=True), "send")
+        payload["candidates"].append(payload["candidates"][0])
+        self.assertEqual(notification_gate(payload, self.clock, scheduled=True), "blocked_size")
+        payload["candidates"].pop()
+        payload["strategies"][0]["picks"].append(payload["strategies"][0]["picks"][0])
+        self.assertEqual(notification_gate(payload, self.clock, scheduled=True), "blocked_size")
+
     def test_scheduled_holiday_skips_before_any_provider(self):
         clock = {**self.clock, "phase": "non_trading"}
         with patch("scripts.screen_candidates.market_clock", return_value=clock), \
