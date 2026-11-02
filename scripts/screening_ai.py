@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare, analyze and optionally push at most three screened stocks per day."""
+"""Prepare, analyze and optionally push at most five screened stocks per day."""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts.screen_candidates import market_clock, write_outputs
+from scripts.screen_candidates import market_clock, safe_text, write_outputs
 from scripts.send_screening_candidates import notification_gate
 from scripts.screening_scope import SCOPE_NOTICE, is_mainboard, validate_payload
 
-MAX_STOCKS = 3
+MAX_STOCKS = 5
 
 
 def write_json(path: Path, payload: dict):
@@ -93,7 +93,7 @@ def prepare(result_path: Path, *, scheduled=False, api=api_json) -> dict:
         with open(output, "a", encoding="utf-8") as handle:
             handle.write(f"analyze={'true' if plan['status'] == 'ready' else 'false'}\n")
             handle.write(f"budget_name={plan['budget_name']}\n")
-    print(f"AI 计划：{plan['status']}；本批 {len(plan['codes'])} 只（最多 3 只）。", flush=True)
+    print(f"AI 计划：{plan['status']}；本批 {len(plan['codes'])} 只（最多 {MAX_STOCKS} 只）。", flush=True)
     return plan
 
 
@@ -171,7 +171,14 @@ def analyze(result_path: Path, reservation_id: str, *, api=api_json, runner=nati
             heading = (f"# 筛选候选 AI 分析 — {plan['trade_date']}\n\n"
                        f"本次选择 {len(codes)} 只，完成 {len(state['completed_codes'])} 只。"
                        f"候选来源为有界技术筛选，分析仅供参考。\n\n{SCOPE_NOTICE}\n\n")
-            (folder / "ai_report.md").write_text(heading + report, encoding="utf-8")
+            overview = ["## 本轮候选总览（最多20只）", "",
+                        "仅标注已完成的股票做过本轮AI分析，其余仅为技术因子候选；未逐只核验新闻和公告。", ""]
+            for candidate in payload.get("candidates", []):
+                code = candidate["code"]
+                label = "已完成AI分析" if code in completed else "仅因子筛选，未做AI分析"
+                overview.append(f"- {code} {safe_text(candidate['name'])}：{label}")
+            (folder / "ai_report.md").write_text(
+                heading + "\n".join(overview) + "\n\n" + report, encoding="utf-8")
     except Exception as exc:
         state["status"], state["error_type"] = "failed", type(exc).__name__
     write_json(previous_path, state)

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.screen_candidates import STRATEGIES, market_clock, safe_text, schedule_gate, write_outputs
-from scripts.screening_scope import SCOPE_NOTICE, validate_payload
+from scripts.screening_scope import MAX_CANDIDATES, PICKS_PER_STRATEGY, SCOPE_NOTICE, validate_payload
 
 
 def notification_gate(payload: dict, clock: dict, *, scheduled: bool) -> str:
@@ -43,13 +43,13 @@ def notification_gate(payload: dict, clock: dict, *, scheduled: bool) -> str:
             return "blocked_date_evidence"
         if result.get("date_rejected_from_top5") or result.get("run_crossed_session_boundary"):
             return "blocked_date_evidence"
-        if len(result.get("picks", [])) > 5:
+        if len(result.get("picks", [])) > PICKS_PER_STRATEGY:
             return "blocked_size"
         for pick in result.get("picks", []):
             if (pick.get("date_audit_status") != "pass" or pick.get("daily_trade_date") != expected
                     or pick.get("snapshot_trade_date") != expected):
                 return "blocked_date_evidence"
-    if len(payload.get("candidates", [])) > 10:
+    if len(payload.get("candidates", [])) > MAX_CANDIDATES:
         return "blocked_size"
     try:
         validate_payload(payload)
@@ -74,7 +74,7 @@ def message_body(payload: dict) -> tuple[str, str]:
             lines.append(f"- {safe_text(pick['code'])} {safe_text(pick['name'])[:40]}"
                          f"（策略内分 {float(pick['final_score']):.2f}）")
         lines.append("")
-    lines += [f"去重候选：{len(payload['candidates'])} 只（最多 10 只）。",
+    lines += [f"去重候选：{len(payload['candidates'])} 只（最多 {MAX_CANDIDATES} 只）。",
               "日期一致不保证每个价格新鲜；名单供观察，不是买入指令。"]
     return title, "\n".join(lines)
 

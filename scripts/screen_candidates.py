@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.screening_scope import (
-    SCOPE_NOTICE, filter_snapshot, policy_descriptor, rejection_reason,
+    MAX_CANDIDATES, PICKS_PER_STRATEGY, SCOPE_NOTICE, filter_snapshot, policy_descriptor, rejection_reason,
 )
 
 STRATEGIES = {"volume_breakout": "放量突破", "shrink_pullback": "缩量回踩"}
@@ -247,7 +247,7 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
 
         try:
             result = screen_fn(
-                strategy, market="cn", max_output=5, use_llm=False,
+                strategy, market="cn", max_output=PICKS_PER_STRATEGY, use_llm=False,
                 collect_llm_candidate_context=False, candidate_context_providers=[],
                 post_analyzers=["scorecard"], deep_analysis=False,
                 daily_enrich=True, daily_enrich_max_candidates=daily_limit,
@@ -268,7 +268,7 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
             scope_rejected = []
             audits = {code: audit_pick_dates(code, evidence, snapshot, clock)
                       for code, evidence in histories.items()}
-            for pick in result.picks:
+            for pick in result.picks[:PICKS_PER_STRATEGY]:
                 code = str(pick.code).zfill(6)
                 audit = audits.get(code) or audit_pick_dates(code, {}, snapshot, clock)
                 if audit["date_audit_status"] == "fail":
@@ -325,7 +325,7 @@ def run_screening(output_dir: Path, *, daily_limit: int = 30, screen_fn=None) ->
     # Factor scores from different strategies are not directly comparable.
     # Interleave within-strategy ranks, deduplicate, and retain both signal labels.
     candidates = {}
-    for rank in range(5):
+    for rank in range(PICKS_PER_STRATEGY):
         for result in results:
             picks = result["picks"]
             if rank >= len(picks):
@@ -393,7 +393,7 @@ def write_outputs(output_dir: Path, payload: dict) -> None:
              "抓取时间不是交易日期；未知日期不视为通过。unknown 候选只用于诊断，fail 候选移除且不补位。", "",
              "快照交易日按来源原始字段记录；东方财富 em_datacenter 使用 MAX_TRADE_DATE。",
              "日期 pass 仅表示来源声明日期与日线/日历一致，不证明逐股实际最后成交日、价格准确或数据完整。", "",
-             f"运行状态：{payload['status']}；去重候选数：{len(codes)}（最多 10 只）", ""]
+             f"运行状态：{payload['status']}；去重候选数：{len(codes)}（最多 {MAX_CANDIDATES} 只）", ""]
     if payload.get("skip_reason"):
         lines += [f"本次跳过：{payload['skip_reason']}；未抓取行情、未发送通知。", ""]
     if payload.get("ai_analysis"):
@@ -416,7 +416,7 @@ def write_outputs(output_dir: Path, payload: dict) -> None:
         lines += [f"日期核验：{result['date_audit_status']}；原快照来源："
                   f"{result['snapshot_original_source'] or '未知'}；快照抓取时间："
                   f"{result['snapshot_fetched_at'] or '未知'}（不是交易日期）。",
-                  f"Top 5 中因日期失败移除：{len(result['date_rejected_from_top5'])} 只；"
+                  f"Top {PICKS_PER_STRATEGY} 中因日期失败移除：{len(result['date_rejected_from_top5'])} 只；"
                   "逐股日线/快照日期及原因详见 JSON 的 date_audit。", ""]
         if result["run_crossed_session_boundary"]:
             lines += ["运行跨越了已完成交易日的边界，不能作为同一交易日的完整结果。", ""]
@@ -429,7 +429,7 @@ def write_outputs(output_dir: Path, payload: dict) -> None:
                              f"{row.get('snapshot_trade_date') or '未知'} | {row['date_audit_status']} |")
         else:
             lines.append("本次核验范围内没有可输出候选，未放宽条件凑数。")
-        lines += ["", f"Top 5 中因陈旧/失败/样本不足而移除：{result['quality_rejected_from_top5']} 只。",
+        lines += ["", f"Top {PICKS_PER_STRATEGY} 中因陈旧/失败/样本不足而移除：{result['quality_rejected_from_top5']} 只。",
                   "", "筛选记录（包含数据源降级、缺失和过滤情况）：", ""]
         lines += [f"- {note}" for note in result["notes"]]
         lines.append("")

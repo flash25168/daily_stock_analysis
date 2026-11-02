@@ -1,4 +1,4 @@
-name: 每日自动选股与AI分析（最多3只）
+name: 每日自动选股与AI分析（最多5只）
 
 on:
   # 北京时间周一至周五 17:17；交易日历另行跳过节假日。
@@ -9,7 +9,7 @@ on:
       daily_limit:
         description: 每策略日线核验上限（不是逐股全量扫描）
         type: choice
-        default: '100'
+        default: '300'
         options:
           - '30'
           - '100'
@@ -19,7 +19,7 @@ on:
         type: boolean
         default: false
       run_ai:
-        description: 本次调用现有模型分析最多3只（产生模型费用，占用当天AI批次）
+        description: 本次调用现有模型分析最多5只（产生模型费用，占用当天AI批次）
         type: boolean
         default: false
 
@@ -56,7 +56,7 @@ jobs:
         env:
           PYTHONUNBUFFERED: '1'
           TZ: Asia/Shanghai
-          DAILY_LIMIT: ${{ inputs.daily_limit || '100' }}
+          DAILY_LIMIT: ${{ inputs.daily_limit || '300' }}
           EVENT_NAME: ${{ github.event_name }}
           SCREENING_SNAPSHOT_CALL_TIMEOUT_SEC: '60'
           SCREENING_DAILY_CALL_TIMEOUT_SEC: '15'
@@ -83,7 +83,7 @@ jobs:
           path: reports/screening_test/ai_plan.json
           if-no-files-found: error
           retention-days: 30
-      - name: 调用原模型分析候选（每日一批最多3只）
+      - name: 调用原模型分析候选（每日一批最多5只）
         if: success() && steps.ai_plan.outputs.analyze == 'true'
         env:
           FUNDAMENTAL_STAGE_TIMEOUT_SECONDS: ${{ vars.FUNDAMENTAL_STAGE_TIMEOUT_SECONDS || '8.0' }}

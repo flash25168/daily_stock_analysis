@@ -34,7 +34,7 @@ class CandidateTest(unittest.TestCase):
         self.assertEqual(config.post_analyzer_url, "")
         self.assertEqual(config.dsa_api_url, "")
 
-    def test_ten_limit_dedup_and_leading_zero(self):
+    def test_overlapping_strategies_dedup_and_leading_zero(self):
         def screen(strategy, **kwargs):
             self.assertFalse(kwargs["use_llm"])
             self.assertFalse(kwargs["deep_analysis"])
@@ -49,6 +49,20 @@ class CandidateTest(unittest.TestCase):
         common = next(row for row in payload["candidates"] if row["code"] == "000005")
         self.assertEqual(len(common["signals"]), 2)
         self.assertTrue((self.output / "candidate_codes.txt").read_text().startswith("000001"))
+
+    def test_twenty_candidates_keep_rank_order_and_ten_per_strategy(self):
+        def screen(strategy, **kwargs):
+            self.assertEqual(kwargs["max_output"], 10)
+            start = 1 if strategy == "volume_breakout" else 11
+            picks = [Pick(price=10, rank=i+1, code=f"600{start+i:03}",
+                          name="测试", final_score=70, screen_score=70) for i in range(12)]
+            return self.result(strategy, picks=picks)
+        result = run_screening(self.output, screen_fn=screen)
+        self.assertEqual(len(result["candidates"]), 20)
+        self.assertTrue(all(len(strategy["picks"]) == 10 for strategy in result["strategies"]))
+        self.assertEqual([p["code"] for p in result["candidates"][:4]],
+                         ["600001", "600011", "600002", "600012"])
+        self.assertIn("最多 20 只", (self.output / "screening_report.md").read_text(encoding="utf-8"))
 
     def test_legitimate_empty_is_success(self):
         result = run_screening(self.output, screen_fn=lambda strategy, **_: self.result(strategy))
