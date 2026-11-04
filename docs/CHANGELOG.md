@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 自动选股使用可核实交易日期且提供量比的东财/Tushare快照，避免新浪字段不足阻断分析。
+
 - [修复] 自动选股的缩量回踩统一采用MA5/MA10支撑与前5日均量70%规则，保留20候选及5只AI上限。
 - [新功能] 人工登记持仓按买入批次提供第1—3交易日无AI复盘，校验收盘数据并防止重复推送。
 
