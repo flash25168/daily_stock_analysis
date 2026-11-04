@@ -26,6 +26,7 @@ class HardFilterConfig:
     change_pct_max: float | None = None
     change_60d_min: float | None = None
     change_60d_max: float | None = None
+    require_short_pullback: bool = False
     require_ma_bullish: bool = False
     require_price_above_ma20: bool = False
     signal_score_min: int | None = None

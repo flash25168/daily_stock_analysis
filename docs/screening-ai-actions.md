@@ -124,3 +124,20 @@ original task. Ordinary files can be installed before replacing the workflow.
 JSON中既有`*_from_top5`审计键为兼容历史消费者保留，表示本轮输出池，当前每策略最多10只；展示文案已同步。回滚本次改动恢复5/10/3和100只日线限制，勿删除当日AI额度。
 
 English: Each strategy returns up to ten picks; rank-interleaving yields at most twenty unique candidates. Scheduled daily enrichment increases to 300 per strategy without relaxing filters. One daily AI batch covers at most five stocks, retaining the existing reservation name and fail-closed date/scope checks. The AI report distinguishes analyzed stocks from factor-only candidates. Self-list analysis remains independent. No separate English topic file exists.
+
+
+## MA5/MA10回踩与人工持仓提醒
+
+缩量回踩现统一为：MA5 > MA10 > MA20；收盘在MA5至MA5×1.01之间，或MA10至MA10×1.02之间（含边界）；当日成交量严格小于前5个交易日平均成交量的70%。至少需要20条有效日线，缺失、无穷或非正价格不能生成信号。其余成交额、换手率、波动和质量过滤仍生效；放量突破策略保持原规则。
+
+候选上限20只（每策略最多10只）、AI最多分析5只，以及每策略最多补取300只日线保持不变。规则更严格时可能不足20只，系统不会凑数。固定日报继续使用你配置的股票名单，与短线提醒独立。
+
+新增“人工持仓短线复盘（无AI）”：工作日北京时间17:20计划运行，GitHub可能延迟。只有经过交易日历和当日收盘行情核对后，才复盘买入后的第1、2、3个交易日；买入当天和超过3个交易日不发送此提醒。第3日提示人工复核观察期；收盘跌破MA20时提示人工复核止损条件，不执行任何交易，也不承诺按该价格成交。
+
+登记入口为GitHub仓库 Settings → Environments → STOCK_LIST → Environment secrets → SCREENING_POSITIONS_JSON。每只股票含code、entry_date、entry_price、shares；分批买入增加lots列表，每批含entry_date、execution_price、shares，批次数量合计必须等于总持股。日期分别计时，不因加仓重置旧批次。未提供lots的旧配置仍按登记成本和日期处理；提供lots时，变动按该批成交价计算，不用券商汇总成本代替，也不再次扣减已记录的分红。变动未计费用和分红，不等同券商总盈亏。实际持仓需手工维护，系统不连接券商账户。
+
+实际成本和股数只存Secret及本次运行临时正文，不写仓库、日志、摘要或上传正文artifact，不传给AI；artifact仅保存日期和发送占用信息。同日重复占用或结果无法核实时停止推送，发送结果不明不自动重试。PushPlus沿用现有配置，模型配置无需修改。手动运行默认只生成诊断，不发送；需要发送时才勾选send_notification。
+
+English behavior note: pullback screening uses MA5/MA10 support and less than 70% of the preceding five sessions' average volume. Manual positions are reviewed per buy lot for sessions 1–3, independently of AI and order execution. This repository-specific guide has no separate English counterpart.
+
+回滚：禁用03-position-review.yml即可停止新增提醒；回退本次变更可恢复旧回踩规则，持仓Secret及固定日报名单不需要删除。
