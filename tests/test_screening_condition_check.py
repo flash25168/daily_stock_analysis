@@ -26,6 +26,7 @@ SNAPSHOT = {
     "total_mv": 10000000000, "pe_ratio": 8, "pb_ratio": 1, "change_pct": 0,
 }
 ALL_FIELDS = {
+    "short_pullback": True,
     "name": "Example", "price": 5, "amount": 5, "total_mv": 5,
     "pe_ratio": 5, "pb_ratio": 5, "volume_ratio": 5, "turnover_rate": 5,
     "change_pct": 5, "change_60d": 5, "ma_bullish": True,
