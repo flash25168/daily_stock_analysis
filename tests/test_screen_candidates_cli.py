@@ -29,6 +29,7 @@ class CandidateTest(unittest.TestCase):
         with patch.dict("os.environ", {"OPENAI_API_KEY": "dummy", "POST_ANALYZERS": "dsa,external_http",
                                        "POST_ANALYZER_URL": "https://invalid.example"}):
             config = make_config(self.output, 30)
+        self.assertEqual(config.snapshot_source_priority, ["em_datacenter", "tushare"])
         self.assertFalse(config.has_llm_config())
         self.assertEqual(config.post_analyzers, ["scorecard"])
         self.assertEqual(config.post_analyzer_url, "")

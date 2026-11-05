@@ -191,6 +191,9 @@ def make_config(cache_dir: Path, daily_limit: int):
     # Deliberately do not use Config.from_env(): model and remote-analyzer settings
     # must not leak into this entry point, even on an already configured machine.
     return Config(
+        # Automated after-close screening needs dated snapshots and volume ratios.
+        # Sina has neither a verifiable session date nor the required volume ratio.
+        snapshot_source_priority=["em_datacenter", "tushare"],
         data_dir=cache_dir,
         fallback_snapshot_path=cache_dir / "snapshot.last_good.json",
         snapshot_fallback_max_age_hours=0,

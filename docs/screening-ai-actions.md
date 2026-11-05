@@ -141,3 +141,6 @@ English: Each strategy returns up to ten picks; rank-interleaving yields at most
 English behavior note: pullback screening uses MA5/MA10 support and less than 70% of the preceding five sessions' average volume. Manual positions are reviewed per buy lot for sessions 1–3, independently of AI and order execution. This repository-specific guide has no separate English counterpart.
 
 回滚：禁用03-position-review.yml即可停止新增提醒；回退本次变更可恢复旧回踩规则，持仓Secret及固定日报名单不需要删除。
+
+
+自动选股专用入口优先使用东财带日期快照，备用Tushare；不使用缺少量比且无法核实交易日期的新浪快照。两源均不可用时明确失败，不跳过日期校验或复用旧候选调用AI。其他交互式选股入口的数据源顺序保持原配置。
